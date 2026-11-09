@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
-import { loadCandidates, userStorage } from './pool.js'
+import { loadCandidates, userAvailable } from './pool.js'
 import { usablePoolBytes } from './pool-select.js'
 
 export const storageRouter = Router()
@@ -17,7 +17,7 @@ function bytesToString(value: bigint | number | string | null | undefined) {
 
 storageRouter.get('/summary', async (req: AuthRequest, res, next) => {
   try {
-    const usage = await userStorage(req.user!.id)
+    const usage = await userAvailable(req.user!.id)
     const body: Record<string, unknown> = {
       usedBytes: usage.usedBytes.toString(),
       limitBytes: usage.limitBytes?.toString() ?? null,

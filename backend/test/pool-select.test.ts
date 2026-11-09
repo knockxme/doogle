@@ -84,9 +84,9 @@ test('round_robin advances with the cursor', () => {
   assert.deepEqual(pickPair([a, b, c], 1n, policy(3), now), [a.id, b.id])
 })
 
-test('usablePoolBytes sums effective free of unpaused accounts', () => {
+test('usablePoolBytes halves the summed effective free of unpaused accounts', () => {
   const a = cand({ providerFreeBytes: 5n * GB }), b = cand({ providerFreeBytes: 7n * GB }), p = cand({ pausedUntil: new Date(now.getTime() + 1000) })
-  assert.equal(usablePoolBytes([a, b, p], now), 12n * GB)
+  assert.equal(usablePoolBytes([a, b, p], now), 6n * GB)
   assert.equal(usablePoolBytes([], now), 0n)
 })
 test('usablePoolBytes is null when any usable account is unlimited', () => {

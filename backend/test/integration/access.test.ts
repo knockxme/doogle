@@ -222,3 +222,16 @@ test('members cannot reach pool admin routes and the summary hides account email
   assert.ok(!('accounts' in summary.json))
   assert.equal(summary.json.usedBytes, '0')
 })
+
+test('capped accounts serialize capBytes as a string in admin listings', async () => {
+  const admin = await seedUser('adm-cap', 'admin')
+  const token = (await login('adm-cap')).json.accessToken
+  const acct = await prisma.connectedAccount.create({ data: { userId: admin.id, provider: 's3', providerAccountId: `cap-${run}`, email: `cap-${run}@pool.test`, scopes: [], capBytes: 12345n } })
+  await prisma.storageAccount.create({ data: { connectedAccountId: acct.id, usedBytes: 0n, availableBytes: 1000n, lastSyncedAt: new Date() } })
+  const list = await http('GET', '/connected-accounts', { token })
+  assert.equal(list.status, 200)
+  assert.equal(list.json.accounts.find((a: any) => a.id === acct.id).capBytes, '12345')
+  const pool = await http('GET', '/admin/storage/accounts', { token })
+  assert.equal(pool.status, 200)
+  assert.equal(pool.json.accounts.find((a: any) => a.id === acct.id).capBytes, '12345')
+})

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import test, { after, before, beforeEach } from 'node:test'
 import { prisma } from '../../src/config/prisma.js'
 import { encryptedSize } from '../../src/modules/crypto/frames.js'
-import { initialCapForConnect, reserveUpload, userStorage } from '../../src/modules/storage/pool.js'
+import { initialCapForConnect, reserveUpload, userAvailable, userStorage } from '../../src/modules/storage/pool.js'
 
 const run = randomUUID().slice(0, 8)
 const userIds: string[] = []
@@ -111,4 +111,21 @@ test('initialCapForConnect copies the default for new accounts and keeps the exi
   assert.equal(initialCapForConnect(null, null), null)
   assert.equal(initialCapForConnect({ capBytes: 5n }, 20n), 5n)
   assert.equal(initialCapForConnect({ capBytes: null }, 20n), null)
+})
+
+test('member availability is the lower of limit remaining and pool usable space', async () => {
+  const unlimited = await seedUser('avail-free')
+  await seedAccount(unlimited.id, 'v1', 10n ** 9n, { capBytes: 0n })
+  await seedAccount(unlimited.id, 'v2', 10n ** 9n, { capBytes: 0n })
+  assert.equal((await userAvailable(unlimited.id)).availableBytes, 0n)
+
+  const limited = await seedUser('avail-lim', 10n ** 12n)
+  await prisma.connectedAccount.deleteMany({ where: { id: { in: accountIds } } })
+  accountIds = []
+  await seedAccount(limited.id, 'v3', 4_000n)
+  await seedAccount(limited.id, 'v4', 6_000n)
+  assert.equal((await userAvailable(limited.id)).availableBytes, 5_000n)
+
+  const small = await seedUser('avail-small', 100n)
+  assert.equal((await userAvailable(small.id)).availableBytes, 100n)
 })

@@ -45,6 +45,7 @@ connectedAccountRouter.get('/', requireAuth, requireAdmin, async (req: AuthReque
     return res.json({
       accounts: syncedAccounts.map(({ accessTokenEncrypted: _a, refreshTokenEncrypted: _r, storageAccount, ...account }) => ({
         ...account,
+        capBytes: account.capBytes?.toString() ?? null,
         storageAccount: storageAccount ? {
           ...storageAccount,
           totalBytes: storageAccount.totalBytes?.toString() ?? null,
@@ -143,6 +144,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
       return res.status(201).json({
         account: {
           ...account,
+          capBytes: account.capBytes?.toString() ?? null,
           storageAccount: { ...quota, totalBytes: quota.totalBytes?.toString() ?? null, usedBytes: quota.usedBytes.toString(), availableBytes: quota.availableBytes?.toString() ?? null, trashBytes: quota.trashBytes?.toString() ?? null },
         },
       })

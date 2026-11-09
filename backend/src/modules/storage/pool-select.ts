@@ -77,7 +77,7 @@ export function pickPair(cs: Candidate[], needBytes: bigint, policy: RoutingPoli
   return [ranked[0].c.id, ranked[1].c.id]
 }
 
-/** Total room across unpaused accounts. null when any of them is unlimited. */
+/** Room for new files: summed free space of unpaused accounts, halved because every file is stored twice. null when any is unlimited. */
 export function usablePoolBytes(cs: Candidate[], now: Date): bigint | null {
   let total = 0n
   for (const c of cs) {
@@ -86,5 +86,5 @@ export function usablePoolBytes(cs: Candidate[], now: Date): bigint | null {
     if (free === null) return null
     total += free
   }
-  return total
+  return total / 2n
 }

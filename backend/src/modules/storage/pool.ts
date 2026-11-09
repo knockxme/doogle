@@ -6,7 +6,7 @@ import { encryptedSize } from '../crypto/frames.js'
 import { syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota } from '../s3/s3.service.js'
 import { PoolError } from './pool-errors.js'
-import { pickPair, type Candidate } from './pool-select.js'
+import { pickPair, usablePoolBytes, type Candidate } from './pool-select.js'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
@@ -86,6 +86,14 @@ export async function userStorage(userId: string, db: Db = prisma): Promise<{ us
   const limitBytes = user.storageLimitBytes
   const availableBytes = limitBytes === null ? null : (limitBytes > usedBytes ? limitBytes - usedBytes : 0n)
   return { usedBytes, limitBytes, availableBytes }
+}
+
+/** What a user may still upload: the lower of their limit remaining and the pool's usable space. null only when both are unlimited. */
+export async function userAvailable(userId: string): Promise<{ usedBytes: bigint; limitBytes: bigint | null; availableBytes: bigint | null }> {
+  const usage = await userStorage(userId)
+  const pool = usablePoolBytes(await loadCandidates(), new Date())
+  const availableBytes = usage.availableBytes === null ? pool : pool === null ? usage.availableBytes : (usage.availableBytes < pool ? usage.availableBytes : pool)
+  return { ...usage, availableBytes }
 }
 
 function normalizeIds(value: unknown): string[] {
