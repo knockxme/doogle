@@ -13,6 +13,9 @@ model User {
   email          String             @unique @db.VarChar(191)
   passwordHash   String             @map("password_hash") @db.VarChar(255)
   status         String             @default("active") @db.VarChar(32)
+  role           String             @default("member") @db.VarChar(32)
+  mustChangePassword Boolean        @default(false) @map("must_change_password")
+  storageLimitBytes BigInt?         @map("storage_limit_bytes")
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
   sessions       UserSession[]
@@ -148,6 +151,8 @@ model ConnectedAccount {
   scopes                Json
   status                String          @default("connected") @db.VarChar(32)
   lastError             String?         @map("last_error") @db.Text
+  capBytes              BigInt?         @map("cap_bytes")
+  pausedUntil           DateTime?       @map("paused_until")
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
   user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -157,6 +162,8 @@ model ConnectedAccount {
   folders               Folder[]
   uploadSessions        UploadSession[]
   s3StorageConfig       S3StorageConfig?
+  fileReplicas          FileReplica[]
+  orphanBlobs           OrphanBlob[]
 
   @@unique([userId, provider, providerAccountId])
   @@index([userId])
@@ -214,6 +221,9 @@ model File {
   mimeType           String           @map("mime_type") @db.VarChar(191)
   sizeBytes          BigInt           @map("size_bytes")
   checksum           String?          @db.VarChar(191)
+  wrappedFileKey     String?          @map("wrapped_file_key") @db.Text
+  encryptedSizeBytes BigInt?          @map("encrypted_size_bytes")
+  encVersion         Int              @default(1) @map("enc_version")
   status             String           @default("active") @db.VarChar(32)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
@@ -223,6 +233,7 @@ model File {
   folder             Folder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
   shares             FileShare[]
   previewTokens      FilePreviewToken[]
+  replicas           FileReplica[]
 
   @@index([userId])
   @@index([userId, status, createdAt])
@@ -306,12 +317,15 @@ model UploadSession {
   sizeBytes                BigInt            @map("size_bytes")
   status                   String            @db.VarChar(32)
   googleSessionUri         String?           @map("google_session_uri") @db.Text
+  fileId                   String?           @map("file_id") @db.Char(36)
+  wrappedFileKey           String?           @map("wrapped_file_key") @db.Text
   errorMessage             String?           @map("error_message") @db.Text
   createdAt                DateTime          @default(now()) @map("created_at")
   completedAt              DateTime?         @map("completed_at")
   user                     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   targetConnectedAccount   ConnectedAccount? @relation(fields: [targetConnectedAccountId], references: [id], onDelete: SetNull)
   folder                   Folder?           @relation("UploadSessionFolder", fields: [folderId], references: [id], onDelete: SetNull)
+  replicas                 UploadSessionReplica[]
 
   @@index([userId])
   @@index([folderId])
@@ -350,4 +364,72 @@ model WorkspaceInvite {
   @@index([inviteeEmail])
   @@index([targetType, targetId])
   @@map("workspace_invites")
+}
+
+model AppSetting {
+  id                    Int      @id @default(1)
+  defaultAccountCapBytes BigInt? @map("default_account_cap_bytes")
+  masterKeyFingerprint  String?  @map("master_key_fingerprint") @db.VarChar(128)
+  routingMode           String   @default("most_available") @map("routing_mode") @db.VarChar(32)
+  priorityAccountIds    Json     @map("priority_account_ids")
+  roundRobinCursor      Int      @default(0) @map("round_robin_cursor")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+model FileReplica {
+  id                 String           @id @default(uuid()) @db.Char(36)
+  fileId             String           @map("file_id") @db.Char(36)
+  connectedAccountId String           @map("connected_account_id") @db.Char(36)
+  providerFileId     String           @map("provider_file_id") @db.VarChar(191)
+  status             String           @default("healthy") @db.VarChar(32)
+  sizeBytes          BigInt           @map("size_bytes")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  file               File             @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, connectedAccountId])
+  @@index([connectedAccountId, status])
+  @@map("file_replicas")
+}
+
+model UploadSessionReplica {
+  id                 String        @id @default(uuid()) @db.Char(36)
+  uploadSessionId    String        @map("upload_session_id") @db.Char(36)
+  connectedAccountId String        @map("connected_account_id") @db.Char(36)
+  sessionUriEncrypted String?      @map("session_uri_encrypted") @db.Text
+  s3UploadId         String?       @map("s3_upload_id") @db.VarChar(255)
+  providerFileId     String?       @map("provider_file_id") @db.VarChar(191)
+  reservedBytes      BigInt        @map("reserved_bytes")
+  partEtags          Json?         @map("part_etags")
+  uploadSession      UploadSession @relation(fields: [uploadSessionId], references: [id], onDelete: Cascade)
+
+  @@index([uploadSessionId])
+  @@index([connectedAccountId])
+  @@map("upload_session_replicas")
+}
+
+model OrphanBlob {
+  id                 String           @id @default(uuid()) @db.Char(36)
+  connectedAccountId String           @map("connected_account_id") @db.Char(36)
+  providerFileId     String           @map("provider_file_id") @db.VarChar(191)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@index([connectedAccountId])
+  @@map("orphan_blobs")
+}
+
+model RepairJob {
+  id        String    @id @default(uuid()) @db.Char(36)
+  status    String    @default("running") @db.VarChar(32)
+  processed Int       @default(0)
+  failed    Int       @default(0)
+  startedAt DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  @@map("repair_jobs")
 }
