@@ -42,6 +42,23 @@ async function listAllParts(client: S3Client, bucket: string, key: string, uploa
   return parts.sort((a, b) => a.PartNumber - b.PartNumber)
 }
 
+/**
+ * Contiguous committed bytes from part 1. While the upload is still open, never report
+ * totalSize: back off by the last part so the idempotent re-PUT of that part runs completion.
+ */
+export function committedFromParts(parts: { PartNumber: number; Size: number }[], totalSize: bigint): bigint {
+  let sum = 0n
+  let lastSize = 0n
+  let expected = 1
+  for (const p of parts) {
+    if (p.PartNumber !== expected) break
+    sum += BigInt(p.Size)
+    lastSize = BigInt(p.Size)
+    expected += 1
+  }
+  return sum >= totalSize ? sum - lastSize : sum
+}
+
 export const s3Provider: StorageProvider = {
   async beginUpload(account, blobName) {
     const { client, config } = await ctx(account)
@@ -87,14 +104,7 @@ export const s3Provider: StorageProvider = {
     const { client, config } = await ctx(account)
     try {
       const parts = await listAllParts(client, config.bucket, state.providerFileId, state.s3UploadId)
-      let sum = 0n
-      let expected = 1
-      for (const p of parts) {
-        if (p.PartNumber !== expected) break
-        sum += BigInt(p.Size)
-        expected += 1
-      }
-      return sum > totalSize ? totalSize : sum
+      return committedFromParts(parts, totalSize)
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchUpload') {
         // Upload may already have been completed.

@@ -4,13 +4,13 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { ensureGoogleAppFolder, getAuthedGoogleClient } from '../google/google.service.js'
 import { ProviderQuotaError, ProviderUnavailableError, type ReplicaUploadState, type StorageProvider } from './provider.js'
 
-const QUOTA_REASONS = new Set(['userRateLimitExceeded', 'dailyLimitExceeded', 'uploadQuotaExceeded'])
+const QUOTA_REASONS = new Set(['userRateLimitExceeded', 'dailyLimitExceeded', 'uploadQuotaExceeded', 'storageQuotaExceeded'])
 const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id'
 const FILES_URL = 'https://www.googleapis.com/drive/v3/files'
 
 export function classifyGoogleError(status: number, body: string): Error {
   const message = `Google Drive request failed (${status}).`
-  if (status === 403 || status === 429) {
+  if (status === 403) {
     let reasons: string[] = []
     try {
       const parsed = JSON.parse(body) as { error?: { errors?: { reason?: string }[] } }
@@ -18,13 +18,31 @@ export function classifyGoogleError(status: number, body: string): Error {
     } catch {
       // body is not JSON
     }
-    if (status === 429 || reasons.some((r) => QUOTA_REASONS.has(r))) return new ProviderQuotaError(message)
+    if (reasons.some((r) => QUOTA_REASONS.has(r))) return new ProviderQuotaError(message)
+    if (reasons.includes('rateLimitExceeded')) return new Error(message)
     return new ProviderUnavailableError(message, false)
   }
   if (status === 401) return new ProviderUnavailableError(message, false)
   if (status === 404) return new ProviderUnavailableError(message, true)
   return new Error(message)
 }
+
+/** Maps errors thrown by the googleapis client (GaxiosError-shaped) to provider errors. */
+export function classifyGoogleClientError(error: unknown): Error {
+  if (error instanceof ProviderQuotaError || error instanceof ProviderUnavailableError) return error
+  const e = error as { code?: unknown; message?: string; response?: { status?: number; data?: unknown } } | null
+  const status = e?.response?.status ?? (typeof e?.code === 'number' ? e.code : Number(e?.code))
+  if (Number.isInteger(status) && (status as number) >= 100) {
+    const data = e?.response?.data
+    return classifyGoogleError(status as number, typeof data === 'string' ? data : JSON.stringify(data ?? ''))
+  }
+  if (/invalid_grant|invalid_client|unauthorized/i.test(String(e?.message ?? '') + String(e?.code ?? ''))) {
+    return new ProviderUnavailableError('Google authorization failed.', false)
+  }
+  return error instanceof Error ? error : new Error('Google request failed.')
+}
+
+export const googleDeps = { getToken: accessToken, ensureFolder: ensureGoogleAppFolder }
 
 async function accessToken(account: ConnectedAccount) {
   try {
@@ -69,8 +87,13 @@ async function* sliceStream(source: Readable, start: number, length: number) {
 
 export const googleProvider: StorageProvider = {
   async beginUpload(account, blobName, encryptedSize) {
-    const token = await accessToken(account)
-    const parent = await ensureGoogleAppFolder(account)
+    const token = await googleDeps.getToken(account)
+    let parent: string
+    try {
+      parent = await googleDeps.ensureFolder(account)
+    } catch (error) {
+      throw classifyGoogleClientError(error)
+    }
     const res = await fetch(UPLOAD_URL, {
       method: 'POST',
       headers: {
@@ -133,13 +156,16 @@ export const googleProvider: StorageProvider = {
   async abortUpload(_account, state) {
     if (!state.sessionUri) return
     const res = await fetch(state.sessionUri, { method: 'DELETE', headers: { 'Content-Length': '0' } })
-    await res.arrayBuffer().catch(() => undefined)
     // 499 means the session was cancelled; 404/410 mean it is already gone.
-    if (![204, 404, 410, 499].includes(res.status) && !res.ok) throw await failure(res)
+    if ([204, 404, 410, 499].includes(res.status) || res.ok) {
+      await res.arrayBuffer().catch(() => undefined)
+      return
+    }
+    throw await failure(res)
   },
 
   async readRange(account, providerFileId, start, end) {
-    const token = await accessToken(account)
+    const token = await googleDeps.getToken(account)
     const res = await fetch(`${FILES_URL}/${encodeURIComponent(providerFileId)}?alt=media`, {
       headers: { Authorization: `Bearer ${token}`, Range: `bytes=${start}-${end}` },
     })
@@ -152,13 +178,15 @@ export const googleProvider: StorageProvider = {
   },
 
   async deleteBlob(account, providerFileId) {
-    const token = await accessToken(account)
+    const token = await googleDeps.getToken(account)
     const res = await fetch(`${FILES_URL}/${encodeURIComponent(providerFileId)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     })
-    await res.arrayBuffer().catch(() => undefined)
-    if (res.status === 404 || res.ok) return
+    if (res.status === 404 || res.ok) {
+      await res.arrayBuffer().catch(() => undefined)
+      return
+    }
     throw await failure(res)
   },
 }
