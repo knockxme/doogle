@@ -5,7 +5,7 @@ import { createAuditLog } from '../../utils/audit.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
 import { openFileKey } from '../crypto/file-keys.js'
 import { encryptedSize, encryptFrame, frameCount, FRAME_PLAINTEXT, FRAME_SIZE, UPLOAD_CHUNK_PLAINTEXT } from '../crypto/frames.js'
-import { reserveUpload, syncQuotaForAccount } from '../storage/pool.js'
+import { markAccountUnhealthy, reserveUpload, syncQuotaForAccount } from '../storage/pool.js'
 import { hasTestProvider, ProviderQuotaError, ProviderUnavailableError, providerFor, type ReplicaUploadState } from '../storage/provider.js'
 
 const PLAIN_CHUNK = BigInt(UPLOAD_CHUNK_PLAINTEXT)
@@ -133,6 +133,12 @@ export function failUpload(sessionId: string, reason: string): Promise<void> {
   return withSessionLock(sessionId, () => failLocked(sessionId, reason))
 }
 
+/** An account whose provider refuses access (not a missing blob) leaves routing until it is reconnected. */
+async function markRefused(failures: { reason: unknown; copy: Copy }[]) {
+  const refused = failures.filter((f) => f.reason instanceof ProviderUnavailableError && !f.reason.notFound)
+  await Promise.all(refused.map((f) => markAccountUnhealthy(f.copy.account.id, 'Storage provider refused access.').catch(() => undefined)))
+}
+
 /**
  * Applies the provider failure policy to settled per-copy results: quota pauses the account and fails
  * the upload, unavailability fails it, and anything else is left resumable when `resumable` is set.
@@ -142,6 +148,7 @@ async function throwForFailures(sessionId: string, copies: Copy[], results: Prom
   if (failures.length === 0) return
   for (const { copy } of failures) knownCommitted.delete(copy.replica.id)
 
+  await markRefused(failures)
   const quota = failures.filter((f) => f.reason instanceof ProviderQuotaError)
   if (quota.length > 0) {
     const pausedUntil = new Date(Date.now() + PAUSE_MS)
@@ -301,6 +308,7 @@ export function resumeOffset(sessionId: string): Promise<bigint> {
     const probes = await Promise.allSettled(copies.map((copy) => committedFor(copy, total, false)))
     const rejected = probes.flatMap((probe, i) => (probe.status === 'rejected' ? [{ reason: probe.reason as unknown, copy: copies[i]! }] : []))
     if (rejected.length > 0) {
+      await markRefused(rejected)
       for (const { copy } of rejected) knownCommitted.delete(copy.replica.id)
       throw rejected.some((r) => r.reason instanceof ProviderQuotaError || r.reason instanceof ProviderUnavailableError) ? accountUnavailable() : retryChunk()
     }

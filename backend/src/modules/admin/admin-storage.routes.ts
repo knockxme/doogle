@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth } from '../../middleware/auth.middleware.js'
+import { countFilesMissingCopy, RepairError, startRepair } from './repair.js'
 import { loadCandidates } from '../storage/pool.js'
 import { effectiveFree } from '../storage/pool-select.js'
 
@@ -103,6 +104,50 @@ adminStorageRouter.patch('/settings', async (req, res, next) => {
     }
     await prisma.appSetting.update({ where: { id: 1 }, data })
     return res.json(await readSettings())
+  } catch (error) {
+    return next(error)
+  }
+})
+
+adminStorageRouter.post('/repair', async (_req, res, next) => {
+  try {
+    return res.status(202).json(repairJobJson(await startRepair()))
+  } catch (error) {
+    if (error instanceof RepairError) return res.status(error.status).json({ code: error.code, message: error.message })
+    return next(error)
+  }
+})
+
+adminStorageRouter.get('/repair', async (_req, res, next) => {
+  try {
+    const job = await prisma.repairJob.findFirst({ orderBy: { startedAt: 'desc' } })
+    return res.json(job ? repairJobJson(job) : null)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+function repairJobJson(job: { id: string; status: string; processed: number; failed: number; startedAt: Date; finishedAt: Date | null }) {
+  return { id: job.id, status: job.status, processed: job.processed, failed: job.failed, startedAt: job.startedAt, finishedAt: job.finishedAt }
+}
+
+adminStorageRouter.get('/health', async (_req, res, next) => {
+  try {
+    const [accounts, counts, candidates, filesMissingCopy] = await Promise.all([
+      prisma.connectedAccount.findMany({ select: { id: true, email: true, status: true, lastError: true }, orderBy: { createdAt: 'asc' } }),
+      prisma.fileReplica.groupBy({ by: ['connectedAccountId', 'status'], _count: { _all: true } }),
+      loadCandidates(),
+      countFilesMissingCopy(),
+    ])
+    const free = new Map(candidates.map((c) => [c.id, effectiveFree(c)]))
+    const count = (id: string, status: string) => counts.find((c) => c.connectedAccountId === id && c.status === status)?._count._all ?? 0
+    return res.json({
+      accounts: accounts.map((a) => {
+        const f = free.get(a.id)
+        return { id: a.id, email: a.email, status: a.status, lastError: a.lastError, healthyCopies: count(a.id, 'healthy'), lostCopies: count(a.id, 'lost'), full: f !== undefined && f !== null && f <= 0n }
+      }),
+      filesMissingCopy,
+    })
   } catch (error) {
     return next(error)
   }

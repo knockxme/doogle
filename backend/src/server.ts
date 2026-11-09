@@ -1,5 +1,6 @@
 import { app } from './app.js'
 import { env } from './config/env.js'
+import { resumeRepairOnBoot } from './modules/admin/repair.js'
 import { assertMasterKeyMatches } from './modules/crypto/file-keys.js'
 
 async function main() {
@@ -7,6 +8,7 @@ async function main() {
   app.listen(env.APP_PORT, () => {
     console.log(`Backend running on http://localhost:${env.APP_PORT}`)
   })
+  void resumeRepairOnBoot().catch((error) => console.error('Repair resume failed:', error instanceof Error ? error.name : 'unknown error'))
 }
 
 main().catch((error) => {

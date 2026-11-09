@@ -6,7 +6,7 @@ import { encryptedSize } from '../crypto/frames.js'
 import { syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota } from '../s3/s3.service.js'
 import { PoolError } from './pool-errors.js'
-import { pickPair, usablePoolBytes, type Candidate } from './pool-select.js'
+import { effectiveFree, pickPair, usablePoolBytes, type Candidate } from './pool-select.js'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
@@ -43,7 +43,7 @@ async function resyncStale() {
 export async function reservedByAccount(db: Db = prisma): Promise<Map<string, bigint>> {
   const rows = await db.uploadSessionReplica.groupBy({
     by: ['connectedAccountId'],
-    where: { uploadSession: { status: 'uploading', createdAt: { gt: sessionCutoff() } } },
+    where: { uploadSession: { status: { in: ['uploading', 'repairing'] }, createdAt: { gt: sessionCutoff() } } },
     _sum: { reservedBytes: true },
   })
   return new Map(rows.map((r) => [r.connectedAccountId, r._sum.reservedBytes ?? 0n]))
@@ -141,5 +141,43 @@ export async function reserveUpload(args: { userId: string; plainSize: bigint; f
     const rows = await tx.connectedAccount.findMany({ where: { id: { in: pair } } })
     const byId = new Map(rows.map((r) => [r.id, r]))
     return { session, fileKey, accounts: [byId.get(pair[0])!, byId.get(pair[1])!] as [ConnectedAccount, ConnectedAccount] }
+  }, { timeout: 15_000, maxWait: 15_000 })
+}
+
+/** Takes an account out of routing after the provider refused it (locked, revoked). Never put file names in the reason. */
+export async function markAccountUnhealthy(accountId: string, reason: string): Promise<void> {
+  await prisma.connectedAccount.updateMany({ where: { id: accountId }, data: { status: 'unhealthy', lastError: reason.slice(0, 500) } })
+}
+
+/** Reserves space for one rebuilt copy on the connected account with the most free space that does not already hold the file. */
+export async function reserveRepairTarget(args: { userId: string; fileName: string; encryptedBytes: bigint; excludeAccountIds: string[] }): Promise<{ session: UploadSession; account: ConnectedAccount } | null> {
+  await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
+  await resyncStale()
+  const excluded = new Set(args.excludeAccountIds)
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM app_settings WHERE id = 1 FOR UPDATE`
+    const now = Date.now()
+    const ranked = (await loadCandidates(tx))
+      .filter((c) => !excluded.has(c.id) && !(c.pausedUntil !== null && c.pausedUntil.getTime() > now))
+      .map((c) => ({ c, free: effectiveFree(c) }))
+      .filter((x) => x.free === null || x.free >= args.encryptedBytes)
+      .sort((a, b) => {
+        if (a.free === null || b.free === null) return a.free === b.free ? a.c.createdAt.getTime() - b.c.createdAt.getTime() : a.free === null ? -1 : 1
+        return a.free === b.free ? a.c.createdAt.getTime() - b.c.createdAt.getTime() : a.free > b.free ? -1 : 1
+      })
+    const best = ranked[0]
+    if (!best) return null
+    const session = await tx.uploadSession.create({
+      data: {
+        userId: args.userId,
+        fileName: 'repair',
+        mimeType: 'application/octet-stream',
+        sizeBytes: args.encryptedBytes,
+        status: 'repairing',
+        replicas: { create: [{ connectedAccountId: best.c.id, reservedBytes: args.encryptedBytes }] },
+      },
+    })
+    const account = await tx.connectedAccount.findUniqueOrThrow({ where: { id: best.c.id } })
+    return { session, account }
   }, { timeout: 15_000, maxWait: 15_000 })
 }

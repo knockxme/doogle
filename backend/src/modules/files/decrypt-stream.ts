@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js'
 import { openFileKey } from '../crypto/file-keys.js'
 import { decryptFrame, encryptedSize, frameCount, FRAME_SIZE, FrameAuthError } from '../crypto/frames.js'
 import { frameSpan, type ByteRange } from '../crypto/range.js'
+import { markAccountUnhealthy } from '../storage/pool.js'
 import { ProviderUnavailableError, providerFor } from '../storage/provider.js'
 
 export type FileWithReplicas = File & { replicas: (FileReplica & { connectedAccount: ConnectedAccount })[] }
@@ -115,6 +116,9 @@ export async function openDecryptedStream(file: FileWithReplicas, range: ByteRan
         if (err instanceof ProviderUnavailableError && err.notFound) {
           await prisma.fileReplica.update({ where: { id: replica.id }, data: { status: 'lost' } }).catch(() => undefined)
           console.error(`Replica ${replica.id} of file ${file.id} is missing from its provider; marked lost.`)
+        } else if (err instanceof ProviderUnavailableError) {
+          await markAccountUnhealthy(replica.connectedAccountId, 'Storage provider refused access.').catch(() => undefined)
+          console.error(`Replica ${replica.id} of file ${file.id} account refused access; marked unhealthy.`)
         } else if (err instanceof FrameAuthError) {
           console.error(`Replica ${replica.id} of file ${file.id} failed frame authentication.`)
         } else {

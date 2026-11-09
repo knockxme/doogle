@@ -98,6 +98,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
           tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
           scopes: [],
           status: 'connected',
+          lastError: null,
         },
       })
       : await prisma.connectedAccount.create({ data: {
@@ -210,6 +211,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
       scopes: oauthState.providerConfig.scopes as string[],
       status: 'connected',
+      lastError: null,
     }
     // A reconnect keeps the account's owner and cap; only a new account takes the install default.
     const account = existingAccount
