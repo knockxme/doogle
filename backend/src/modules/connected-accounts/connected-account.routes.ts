@@ -9,6 +9,7 @@ import { decryptText, encryptText, hashToken, randomToken } from '../../utils/cr
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { getDefaultCapBytes, initialCapForConnect, syncQuotaForAccount } from '../storage/pool.js'
 
 export const connectedAccountRouter = Router()
 
@@ -23,15 +24,10 @@ const s3ConnectSchema = z.object({
   quotaBytes: z.string().regex(/^\d+$/).optional().nullable(),
 })
 
-async function syncQuotaForAccount(account: { id: string; provider: string }) {
-  if (account.provider === 's3') return syncS3Quota(account.id)
-  return syncGoogleQuota(account.id)
-}
-
-connectedAccountRouter.get('/', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accounts = await prisma.connectedAccount.findMany({
-      where: { userId: req.user!.id, status: 'connected' },
+      where: { status: 'connected' },
       include: { storageAccount: true },
       orderBy: { createdAt: 'desc' },
     })
@@ -40,7 +36,7 @@ connectedAccountRouter.get('/', requireAuth, async (req: AuthRequest, res, next)
 
     const syncedAccounts = missingQuota.length > 0
       ? await prisma.connectedAccount.findMany({
-        where: { userId: req.user!.id, status: 'connected' },
+        where: { status: 'connected' },
         include: { storageAccount: true },
         orderBy: { createdAt: 'desc' },
       })
@@ -85,7 +81,8 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
     const body = s3ConnectSchema.parse(req.body)
     const providerConfig = await prisma.providerConfig.findFirstOrThrow({ where: { provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
     const providerAccountId = `${body.bucket}:${body.endpoint || body.region}`
-    const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: req.user!.id, provider: 's3', providerAccountId } } })
+    const existingAccount = await prisma.connectedAccount.findFirst({ where: { provider: 's3', providerAccountId } })
+    const defaultCap = await getDefaultCapBytes()
     const account = existingAccount
       ? await prisma.connectedAccount.update({
         where: { id: existingAccount.id },
@@ -102,6 +99,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
       })
       : await prisma.connectedAccount.create({ data: {
         userId: req.user!.id,
+        capBytes: initialCapForConnect(null, defaultCap),
         providerConfigId: providerConfig.id,
         provider: 's3',
         providerAccountId,
@@ -157,7 +155,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
   }
 })
 
-connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/google/connect-url', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
     return res.json({ url })
@@ -166,7 +164,7 @@ connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthR
   }
 })
 
-connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/google/connect', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
     return res.redirect(url)
@@ -193,38 +191,26 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
     if (!providerAccountId || !email) return res.status(400).json({ code: 'GOOGLE_PROFILE_FAILED', message: 'Google profile missing id or email.' })
 
     if (oauthState.flow !== 'connect' || !oauthState.userId) return res.status(400).json({ code: 'GOOGLE_OAUTH_STATE_INVALID', message: 'OAuth state expired.' })
-    const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: oauthState.userId, provider: 'google_drive', providerAccountId } } })
+    const existingAccount = await prisma.connectedAccount.findFirst({ where: { provider: 'google_drive', providerAccountId } })
+    const defaultCap = await getDefaultCapBytes()
     const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
     if (!refreshTokenEncrypted) return res.status(400).json({ code: 'GOOGLE_OAUTH_FAILED', message: 'Google did not return required tokens.' })
 
-    const account = await prisma.connectedAccount.upsert({
-      where: { userId_provider_providerAccountId: { userId: oauthState.userId, provider: 'google_drive', providerAccountId } },
-      create: {
-        userId: oauthState.userId,
-        providerConfigId: oauthState.providerConfigId,
-        provider: 'google_drive',
-        providerAccountId,
-        email,
-        displayName: profile.data.name,
-        avatarUrl: profile.data.picture,
-        accessTokenEncrypted: encryptText(tokens.access_token),
-        refreshTokenEncrypted,
-        tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
-        status: 'connected',
-      },
-      update: {
-        providerConfigId: oauthState.providerConfigId,
-        email,
-        displayName: profile.data.name,
-        avatarUrl: profile.data.picture,
-        accessTokenEncrypted: encryptText(tokens.access_token),
-        refreshTokenEncrypted,
-        tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
-        status: 'connected',
-      },
-    })
+    const common = {
+      providerConfigId: oauthState.providerConfigId,
+      email,
+      displayName: profile.data.name,
+      avatarUrl: profile.data.picture,
+      accessTokenEncrypted: encryptText(tokens.access_token),
+      refreshTokenEncrypted,
+      tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
+      scopes: oauthState.providerConfig.scopes as string[],
+      status: 'connected',
+    }
+    // A reconnect keeps the account's owner and cap; only a new account takes the install default.
+    const account = existingAccount
+      ? await prisma.connectedAccount.update({ where: { id: existingAccount.id }, data: common })
+      : await prisma.connectedAccount.create({ data: { ...common, userId: oauthState.userId, provider: 'google_drive', providerAccountId, capBytes: initialCapForConnect(null, defaultCap) } })
     await prisma.oauthState.update({ where: { id: oauthState.id }, data: { usedAt: new Date() } })
     await syncGoogleQuota(account.id)
     return res.redirect(`${env.FRONTEND_URL}/google-connected?status=success`)
@@ -234,10 +220,10 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
   }
 })
 
-connectedAccountRouter.post('/:id/sync-quota', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.post('/:id/sync-quota', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
-    const account = await prisma.connectedAccount.findFirstOrThrow({ where: { id: accountId, userId: req.user!.id } })
+    const account = await prisma.connectedAccount.findFirstOrThrow({ where: { id: accountId } })
     const quota = await syncQuotaForAccount(account)
     return res.json({
       quota: {
@@ -253,10 +239,10 @@ connectedAccountRouter.post('/:id/sync-quota', requireAuth, async (req: AuthRequ
   }
 })
 
-connectedAccountRouter.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.delete('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
-    await prisma.connectedAccount.updateMany({ where: { id: accountId, userId: req.user!.id }, data: { status: 'disconnected' } })
+    await prisma.connectedAccount.updateMany({ where: { id: accountId }, data: { status: 'disconnected' } })
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)

@@ -54,7 +54,7 @@ systemRouter.post('/google-config', requireAuth, requireAdmin, async (req, res, 
     const finalRedirectUri = redirectUri || defaultRedirect
 
     const scopes = [
-      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/drive.file',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
     ]

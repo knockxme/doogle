@@ -204,3 +204,21 @@ test('Google OAuth callback rejects non-connect flows', async () => {
     await prisma.providerConfig.delete({ where: { id: config.id } })
   }
 })
+
+test('members cannot reach pool admin routes and the summary hides account emails', async () => {
+  await seedUser('mem2', 'member')
+  const token = (await login('mem2')).json.accessToken
+  for (const p of ['/connected-accounts', '/admin/storage/accounts', '/admin/storage/settings', '/storage/breakdown']) {
+    const r = await http('GET', p, { token })
+    assert.equal(r.status, 403, p)
+    assert.equal(r.json.code, 'ADMIN_REQUIRED')
+  }
+  const owner = await seedUser('poolowner', 'admin')
+  const acct = await prisma.connectedAccount.create({ data: { userId: owner.id, provider: 's3', providerAccountId: `pool-${run}`, email: `leaky-${run}@pool.test`, scopes: [] } })
+  await prisma.storageAccount.create({ data: { connectedAccountId: acct.id, usedBytes: 0n, lastSyncedAt: new Date() } })
+  const summary = await http('GET', '/storage/summary', { token })
+  assert.equal(summary.status, 200)
+  assert.ok(!summary.text.includes('@pool.test'))
+  assert.ok(!('accounts' in summary.json))
+  assert.equal(summary.json.usedBytes, '0')
+})
