@@ -331,3 +331,41 @@ test('zip client disconnect stops reading from the provider', async () => {
     setTestProvider(memoryProvider)
   }
 })
+
+test('zip client disconnect while the next file is opening destroys that stream', async () => {
+  const id2 = await upload(randomBytes(3000), 'second.bin', 'application/octet-stream')
+  let reads = 0
+  const streams: Readable[] = []
+  let release!: () => void
+  const gate = new Promise<void>((r) => (release = r))
+  let blocked!: () => void
+  const isBlocked = new Promise<void>((r) => (blocked = r))
+  setTestProvider({
+    ...memoryProvider,
+    readRange: async (a, id, st, en) => {
+      reads++
+      if (reads === 2) {
+        blocked()
+        await gate
+      }
+      const r = await memoryProvider.readRange(a, id, st, en)
+      streams.push(r)
+      return r
+    },
+  })
+  try {
+    const req = request(`${base}/files/batch-download`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' } }, (res) => res.on('error', () => undefined).resume())
+    req.on('error', () => undefined)
+    req.end(JSON.stringify({ fileIds: [fileId, id2] }))
+    await isBlocked
+    req.destroy()
+    await new Promise((r) => setTimeout(r, 300))
+    release()
+    await new Promise((r) => setTimeout(r, 500))
+    assert.equal(reads, 2)
+    assert.ok(streams.length >= 2 && streams.every((s) => s.destroyed), 'every provider stream destroyed')
+  } finally {
+    release()
+    setTestProvider(memoryProvider)
+  }
+})

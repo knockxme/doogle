@@ -360,6 +360,10 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
         console.error(`Skipped file ${file.id} in zip:`, err instanceof Error ? err.name : 'error')
         continue
       }
+      if (res.destroyed) {
+        stream.destroy()
+        return
+      }
       current = stream
       archive.append(stream, { name: file.name })
       try {
