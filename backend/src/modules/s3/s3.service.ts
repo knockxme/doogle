@@ -1,12 +1,11 @@
-import { DeleteObjectCommand, HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
+import { HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
-import type { ConnectedAccount, File, S3StorageConfig } from '@prisma/client'
+import type { S3StorageConfig } from '@prisma/client'
 import type { Readable } from 'node:stream'
 import { prisma } from '../../config/prisma.js'
 import { decryptText } from '../../utils/crypto.js'
 
 type S3Config = S3StorageConfig
-type FileWithAccount = Omit<File, 'wrappedFileKey' | 'encryptedSizeBytes'> & { connectedAccount: ConnectedAccount }
 
 export function createS3Client(config: S3Config) {
   return new S3Client({
@@ -39,12 +38,6 @@ export async function uploadS3Object(config: S3Config, key: string, body: NodeJS
     client,
     params: { Bucket: config.bucket, Key: key, Body: body as Readable, ContentType: mimeType },
   }).done()
-}
-
-export async function deleteS3Object(file: FileWithAccount) {
-  const config = await getS3ConfigForAccount(file.connectedAccountId)
-  const client = createS3Client(config)
-  await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: file.providerFileId }))
 }
 
 export async function syncS3Quota(accountId: string) {

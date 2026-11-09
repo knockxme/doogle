@@ -1,5 +1,5 @@
 import { prisma } from '../config/prisma.js'
-import { deleteS3Object } from '../modules/s3/s3.service.js'
+import { deleteFileCopies, deletableFileArgs } from '../modules/files/delete-blobs.js'
 import { hashToken, randomToken } from '../utils/crypto.js'
 
 const apiUrl = process.env.API_URL || 'http://localhost:4000'
@@ -21,9 +21,11 @@ async function main() {
   if (!response.ok) throw new Error(`Upload failed: ${response.status} ${text}`)
   const data = JSON.parse(text) as { files?: Array<{ id: string }> }
   for (const uploaded of data.files ?? []) {
-    const file = await prisma.file.findUnique({ where: { id: uploaded.id }, include: { connectedAccount: true } })
-    if (file?.provider === 's3') await deleteS3Object(file).catch(() => undefined)
-    if (file) await prisma.file.update({ where: { id: file.id }, data: { status: 'deleted', deletedAt: new Date() } })
+    const file = await prisma.file.findUnique({ where: { id: uploaded.id }, ...deletableFileArgs })
+    if (file) {
+      await deleteFileCopies(file)
+      await prisma.file.delete({ where: { id: file.id } })
+    }
   }
   await prisma.apiKey.update({ where: { id: apiKey.id }, data: { status: 'revoked', revokedAt: new Date() } })
   console.log(text)

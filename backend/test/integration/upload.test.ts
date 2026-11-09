@@ -119,7 +119,6 @@ async function assertStored(fileId: string, userId: string, data: Buffer) {
   assert.equal(file.encryptedSizeBytes, expected)
   assert.equal(file.sizeBytes, BigInt(data.length))
   assert.ok(file.wrappedFileKey)
-  assert.ok(file.replicas.some((r) => r.connectedAccountId === file.connectedAccountId && r.providerFileId === file.providerFileId), 'File row points at one of its copies')
   const blobs = file.replicas.map((r) => {
     assert.equal(r.sizeBytes, expected)
     assert.equal(r.status, 'healthy')

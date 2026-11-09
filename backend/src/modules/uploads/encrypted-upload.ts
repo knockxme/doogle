@@ -196,15 +196,12 @@ async function sendCopy(copy: Copy, ciphertext: Buffer, start: bigint, committed
 }
 
 async function createFile(session: LoadedSession, copies: Copy[], total: bigint) {
-  const first = copies[0]!
+  if (!session.wrappedFileKey) throw new UploadError(409, 'UPLOAD_NOT_ACTIVE', 'This upload is no longer active.')
   const [file] = await prisma.$transaction([
     prisma.file.create({
       data: {
         id: session.fileId!,
         userId: session.userId,
-        connectedAccountId: first.account.id,
-        provider: first.account.provider,
-        providerFileId: first.state.providerFileId!,
         folderId: session.folderId,
         name: session.fileName,
         mimeType: session.mimeType,

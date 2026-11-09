@@ -9,6 +9,8 @@ import { decryptText, encryptText, hashToken, randomToken } from '../../utils/cr
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { canRemoveAccount } from '../files/delete-blobs.js'
+import { failUpload } from '../uploads/encrypted-upload.js'
 import { getDefaultCapBytes, initialCapForConnect, syncQuotaForAccount } from '../storage/pool.js'
 
 export const connectedAccountRouter = Router()
@@ -244,7 +246,27 @@ connectedAccountRouter.post('/:id/sync-quota', requireAuth, requireAdmin, async 
 connectedAccountRouter.delete('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
-    await prisma.connectedAccount.updateMany({ where: { id: accountId }, data: { status: 'disconnected' } })
+    const account = await prisma.connectedAccount.findUnique({ where: { id: accountId }, select: { id: true } })
+    if (!account) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', message: 'Account not found.' })
+    // Files whose only healthy copy lives on this account would become unreadable.
+    const soleCopies = await prisma.file.count({
+      where: {
+        status: { not: 'purged' },
+        replicas: { some: { connectedAccountId: accountId, status: 'healthy' }, none: { connectedAccountId: { not: accountId }, status: 'healthy' } },
+      },
+    })
+    if (!canRemoveAccount(soleCopies)) {
+      return res.status(409).json({ code: 'ACCOUNT_HOLDS_SOLE_COPY', message: `${soleCopies} file(s) have their only healthy copy on this account. Repair them onto another account first.`, files: soleCopies })
+    }
+    // Uploads writing to this account can no longer finish.
+    const sessions = await prisma.uploadSession.findMany({ where: { status: 'uploading', replicas: { some: { connectedAccountId: accountId } } }, select: { id: true } })
+    for (const session of sessions) await failUpload(session.id, 'Storage account was removed.').catch(() => undefined)
+    // Only replica rows go; File rows and the blobs in the provider account are left alone.
+    await prisma.$transaction([
+      prisma.fileReplica.deleteMany({ where: { connectedAccountId: accountId } }),
+      prisma.uploadSessionReplica.deleteMany({ where: { connectedAccountId: accountId } }),
+      prisma.connectedAccount.delete({ where: { id: accountId } }),
+    ])
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)

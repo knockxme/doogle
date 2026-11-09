@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from '../files/delete-blobs.js'
 import { hashPassword } from '../../utils/password.js'
 import { assertNotLastAdmin } from './admin-rules.js'
 
@@ -22,7 +23,7 @@ const patchSchema = z.object({
 })
 const resetSchema = z.object({ temporaryPassword: z.string().min(8) })
 
-function serialize(user: { id: string; name: string; email: string; role: string; status: string; mustChangePassword: boolean; storageLimitBytes: bigint | null; createdAt: Date }, usedBytes = 0n, fileCount = 0) {
+function serialize(user: { id: string; name: string; email: string; role: string; status: string; mustChangePassword: boolean; storageLimitBytes: bigint | null; createdAt: Date }, usedBytes = 0n, fileCount = 0, totalBytes = 0n, totalFileCount = 0) {
   return {
     id: user.id,
     name: user.name,
@@ -33,6 +34,9 @@ function serialize(user: { id: string; name: string; email: string; role: string
     storageLimitBytes: user.storageLimitBytes === null ? null : user.storageLimitBytes.toString(),
     usedBytes: usedBytes.toString(),
     fileCount,
+    // Everything a delete would remove, trash included.
+    totalBytes: totalBytes.toString(),
+    totalFileCount,
     createdAt: user.createdAt,
   }
 }
@@ -45,8 +49,10 @@ adminUsersRouter.get('/', async (_req, res, next) => {
   try {
     const users = await prisma.user.findMany({ orderBy: { createdAt: 'asc' } })
     const usage = await prisma.file.groupBy({ by: ['userId'], where: { status: { not: 'deleted' } }, _sum: { sizeBytes: true }, _count: { _all: true } })
+    const all = await prisma.file.groupBy({ by: ['userId'], _sum: { sizeBytes: true }, _count: { _all: true } })
     const byUser = new Map(usage.map((row) => [row.userId, row]))
-    return res.json({ users: users.map((u) => serialize(u, byUser.get(u.id)?._sum.sizeBytes ?? 0n, byUser.get(u.id)?._count._all ?? 0)) })
+    const totals = new Map(all.map((row) => [row.userId, row]))
+    return res.json({ users: users.map((u) => serialize(u, byUser.get(u.id)?._sum.sizeBytes ?? 0n, byUser.get(u.id)?._count._all ?? 0, totals.get(u.id)?._sum.sizeBytes ?? 0n, totals.get(u.id)?._count._all ?? 0)) })
   } catch (error) {
     return next(error)
   }
@@ -102,11 +108,16 @@ adminUsersRouter.delete('/:id', async (req, res, next) => {
     const target = await prisma.user.findUnique({ where: { id: String(req.params.id) } })
     if (!target) return res.status(404).json({ code: 'USER_NOT_FOUND', message: 'User not found.' })
     assertNotLastAdmin(await countActiveAdmins(), target)
-    // Permanent file removal is wired in Task 9; until then refuse deleting users who own files.
-    if ((await prisma.file.count({ where: { userId: target.id } })) > 0) return res.status(409).json({ code: 'USER_HAS_FILES', message: 'User still owns files and cannot be deleted yet.' })
     if ((await prisma.connectedAccount.count({ where: { userId: target.id } })) > 0) return res.status(409).json({ code: 'USER_HAS_CONNECTED_ACCOUNTS', message: 'User still owns connected accounts and cannot be deleted.' })
+    // Files go first, with both copies. A file whose delete fails stops the user delete so nothing is left unowned.
+    const files = await prisma.file.findMany({ where: { userId: target.id }, ...deletableFileArgs })
+    for (const file of files) {
+      await deleteFileCopies(file)
+      await prisma.file.delete({ where: { id: file.id } })
+    }
     await prisma.user.delete({ where: { id: target.id } })
-    return res.json({ status: 'ok' })
+    refreshQuotasAfterDelete(files)
+    return res.json({ status: 'ok', deletedFiles: files.length })
   } catch (error) {
     return next(error)
   }

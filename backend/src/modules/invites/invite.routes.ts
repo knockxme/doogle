@@ -75,11 +75,12 @@ inviteRouter.post('/', async (req: AuthRequest, res, next) => {
     const inviter = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, select: { email: true } })
     if (email === inviter.email) return res.status(400).json({ code: 'INVITE_SELF_NOT_ALLOWED', message: 'You cannot invite yourself.' })
     await assertTargetOwner(req.user!.id, body.targetType, body.targetId)
-    const existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true, name: true, email: true } })
+    const existingUser = await prisma.user.findFirst({ where: { email, status: 'active' }, select: { id: true, name: true, email: true } })
+    if (!existingUser) return res.status(404).json({ code: 'INVITEE_NOT_FOUND', message: 'No active user has that email.' })
     const invite = await prisma.workspaceInvite.upsert({
       where: { inviterId_inviteeEmail_targetType_targetId: { inviterId: req.user!.id, inviteeEmail: email, targetType: body.targetType, targetId: body.targetId } },
-      create: { inviterId: req.user!.id, inviteeEmail: email, role: body.role, targetType: body.targetType, targetId: body.targetId, status: existingUser ? 'accepted' : 'pending', acceptedAt: existingUser ? new Date() : null },
-      update: { role: body.role, status: existingUser ? 'accepted' : 'pending', acceptedAt: existingUser ? new Date() : null, revokedAt: null },
+      create: { inviterId: req.user!.id, inviteeEmail: email, role: body.role, targetType: body.targetType, targetId: body.targetId, status: 'accepted', acceptedAt: new Date() },
+      update: { role: body.role, status: 'accepted', acceptedAt: new Date(), revokedAt: null },
     })
     const targetByKey = await resolveTargets([invite])
     return res.status(201).json({ invite: serializeInvite(invite, targetByKey.get(`${invite.targetType}:${invite.targetId}`) ?? null, existingUser) })

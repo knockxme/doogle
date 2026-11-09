@@ -76,10 +76,10 @@ test('USER_STORAGE_LIMIT_REACHED when the user would go over their limit', async
 
 test('in-progress sessions and trashed files count toward user usage', async () => {
   const user = await seedUser('usage', 10_000n)
-  const a = await seedAccount(user.id, 'u1', 10n ** 9n)
+  await seedAccount(user.id, 'u1', 10n ** 9n)
   await seedAccount(user.id, 'u2', 10n ** 9n)
-  await prisma.file.create({ data: { userId: user.id, connectedAccountId: a.id, provider: 's3', providerFileId: `pf-${run}`, name: 't', mimeType: 'x/y', sizeBytes: 4_000n, status: 'deleted', deletedAt: new Date() } })
-  await prisma.file.create({ data: { userId: user.id, connectedAccountId: a.id, provider: 's3', providerFileId: `pg-${run}`, name: 'p', mimeType: 'x/y', sizeBytes: 7_000n, status: 'purged' } })
+  await prisma.file.create({ data: { userId: user.id, name: 't', mimeType: 'x/y', sizeBytes: 4_000n, wrappedFileKey: 'wrapped', encryptedSizeBytes: 4_028n, status: 'deleted', deletedAt: new Date() } })
+  await prisma.file.create({ data: { userId: user.id, name: 'p', mimeType: 'x/y', sizeBytes: 7_000n, wrappedFileKey: 'wrapped', encryptedSizeBytes: 7_028n, status: 'purged' } })
   await reserveUpload(args(user.id, 3_000n))
   const usage = await userStorage(user.id)
   assert.equal(usage.usedBytes, 7_000n)

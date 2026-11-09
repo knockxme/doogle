@@ -1,12 +1,10 @@
 import { Router } from 'express'
-import { google } from 'googleapis'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { env } from '../../config/env.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
-import { getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service.js'
-import { deleteS3Object, syncS3Quota } from '../s3/s3.service.js'
+import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from './delete-blobs.js'
 import { streamProviderFile } from './stream-file.js'
 import { openDecryptedStream, readableFileArgs } from './decrypt-stream.js'
 import { Readable } from 'node:stream'
@@ -40,7 +38,6 @@ fileRouter.get('/', async (req: AuthRequest, res, next) => {
       folderId: z.string().optional(),
       q: z.string().trim().max(255).optional(),
       kind: z.enum(['image', 'video', 'pdf', 'doc', 'archive']).optional(),
-      accountId: z.string().optional(),
       minSize: z.coerce.number().optional(),
       maxSize: z.coerce.number().optional(),
       startDate: z.string().datetime().optional(),
@@ -60,7 +57,6 @@ fileRouter.get('/', async (req: AuthRequest, res, next) => {
       status: 'active',
       ...(query.folderId ? { folderId: query.folderId } : {}),
       ...(query.q ? { name: { contains: query.q } } : {}),
-      ...(query.accountId ? { connectedAccountId: query.accountId } : {}),
       ...(query.kind ? { mimeType: { in: typeFilters[query.kind] || [] } } : {}),
       ...(query.minSize !== undefined || query.maxSize !== undefined ? {
         sizeBytes: {
@@ -79,7 +75,6 @@ fileRouter.get('/', async (req: AuthRequest, res, next) => {
     const files = await prisma.file.findMany({
       where,
       include: {
-        connectedAccount: { select: { id: true, email: true, provider: true } },
         folder: { select: { id: true, name: true } }
       },
       orderBy: { createdAt: 'desc' }
@@ -131,7 +126,6 @@ fileRouter.get('/trash', async (req: AuthRequest, res, next) => {
         ...(query.q ? { name: { contains: query.q } } : {})
       },
       include: {
-        connectedAccount: { select: { id: true, email: true, provider: true } },
         folder: { select: { id: true, name: true } }
       },
       orderBy: { deletedAt: 'desc' }
@@ -164,48 +158,28 @@ fileRouter.delete('/batch/permanent', async (req: AuthRequest, res, next) => {
     const body = batchFileSchema.parse(req.body)
     const files = await prisma.file.findMany({
       where: { id: { in: body.fileIds }, userId: req.user!.id, status: 'deleted' },
-      include: { connectedAccount: true }
+      ...deletableFileArgs,
     })
-    const deletedIds: string[] = []
-    const syncedAccountIds = new Set<string>()
+    const deleted: typeof files = []
     const failed: Array<{ fileId: string; message: string }> = []
 
     for (const file of files) {
       try {
-        if (file.provider === 's3') {
-          await deleteS3Object(file)
-        } else {
-          const auth = await getAuthedGoogleClient(file.connectedAccount)
-          const drive = google.drive({ version: 'v3', auth })
-          await drive.files.delete({ fileId: file.providerFileId })
-        }
-        deletedIds.push(file.id)
-        syncedAccountIds.add(file.connectedAccountId)
-        await createAuditLog(req.user!.id, 'PERMANENT_DELETE_FILE', 'file', file.id, { name: file.name })
+        await deleteFileCopies(file)
+        await prisma.file.delete({ where: { id: file.id } })
+        deleted.push(file)
+        await createAuditLog(req.user!.id, 'PERMANENT_DELETE_FILE', 'file', file.id)
       } catch (error) {
-        failed.push({ fileId: file.id, message: error instanceof Error ? error.message : 'Delete failed' })
+        console.error(`Permanent delete of file ${file.id} failed:`, error instanceof Error ? error.name : 'error')
+        failed.push({ fileId: file.id, message: 'Delete failed' })
       }
     }
+    refreshQuotasAfterDelete(deleted)
 
-    if (deletedIds.length > 0) {
-      await prisma.file.deleteMany({
-        where: { id: { in: deletedIds }, userId: req.user!.id }
-      })
-    }
-
-    for (const accountId of syncedAccountIds) {
-      const account = files.find((file) => file.connectedAccountId === accountId)?.connectedAccount
-      if (account?.provider === 's3') {
-        await syncS3Quota(accountId).catch(() => undefined)
-      } else {
-        await syncGoogleQuota(accountId).catch(() => undefined)
-      }
-    }
-
-    if (deletedIds.length === 0 && failed.length > 0) {
+    if (deleted.length === 0 && failed.length > 0) {
       return res.status(400).json({ code: 'FILES_DELETE_FAILED', message: 'No files were permanently deleted.', deleted: 0, failed })
     }
-    return res.json({ status: 'ok', deleted: deletedIds.length, failed })
+    return res.json({ status: 'ok', deleted: deleted.length, failed })
   } catch (error) {
     return next(error)
   }
@@ -215,7 +189,7 @@ fileRouter.get('/shared-links', async (req: AuthRequest, res, next) => {
   try {
     const shares = await prisma.fileShare.findMany({
       where: { userId: req.user!.id, enabled: true, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-      include: { file: { include: { connectedAccount: { select: { email: true, provider: true } }, folder: { select: { id: true, name: true } } } } },
+      include: { file: { include: { folder: { select: { id: true, name: true } } } } },
       orderBy: { createdAt: 'desc' },
     })
     return res.json({
@@ -238,7 +212,7 @@ fileRouter.get('/shared-links', async (req: AuthRequest, res, next) => {
 fileRouter.get('/:id', async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: { select: { id: true, email: true, provider: true } }, folder: { select: { id: true, name: true } } } })
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { folder: { select: { id: true, name: true } } } })
     return res.json({ file: { ...file, sizeBytes: file.sizeBytes.toString() } })
   } catch (error) {
     return next(error)
@@ -249,11 +223,9 @@ fileRouter.patch('/:id', async (req: AuthRequest, res, next) => {
   try {
     const body = z.object({ name: z.string().min(1).max(255).optional(), folderId: z.string().nullable().optional() }).parse(req.body)
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
-    const drive = file.provider === 's3' ? null : google.drive({ version: 'v3', auth: await getAuthedGoogleClient(file.connectedAccount) })
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id } })
     if (body.folderId) await prisma.folder.findFirstOrThrow({ where: { id: body.folderId, userId: req.user!.id, deletedAt: null } })
-    if (body.name && drive) await drive.files.update({ fileId: file.providerFileId, requestBody: { name: body.name } })
-    const updated = await prisma.file.update({ where: { id: file.id }, data: { ...(body.name ? { name: body.name } : {}), ...(body.folderId !== undefined ? { folderId: body.folderId } : {}) }, include: { connectedAccount: { select: { id: true, email: true, provider: true } }, folder: { select: { id: true, name: true } } } })
+    const updated = await prisma.file.update({ where: { id: file.id }, data: { ...(body.name ? { name: body.name } : {}), ...(body.folderId !== undefined ? { folderId: body.folderId } : {}) }, include: { folder: { select: { id: true, name: true } } } })
     await createAuditLog(req.user!.id, 'UPDATE_FILE', 'file', updated.id, { name: updated.name, updates: body })
     return res.json({ file: { ...updated, sizeBytes: updated.sizeBytes.toString() } })
   } catch (error) {

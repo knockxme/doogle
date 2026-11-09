@@ -144,17 +144,17 @@ test('last admin cannot be disabled or deleted; listing hides file names', async
     assert.equal(del.json.code, 'LAST_ADMIN')
 
     const owner = await seedUser('owner', 'member')
-    const account = await prisma.connectedAccount.create({ data: { userId: owner.id, provider: 's3', providerAccountId: `acct-${run}`, email: 'a@b.c', scopes: [] } })
     const secretName = `secret-holiday-${run}.jpg`
-    await prisma.file.create({ data: { userId: owner.id, connectedAccountId: account.id, provider: 's3', providerFileId: `pf-${run}`, name: secretName, mimeType: 'image/jpeg', sizeBytes: 1234n } })
+    await prisma.file.create({ data: { userId: owner.id, name: secretName, mimeType: 'image/jpeg', sizeBytes: 1234n, wrappedFileKey: 'wrapped', encryptedSizeBytes: 1262n } })
     const list = await http('GET', '/admin/users', { token })
     assert.equal(list.status, 200)
     assert.ok(!list.text.includes(secretName))
     const row = list.json.users.find((u: any) => u.id === owner.id)
     assert.equal(row.usedBytes, '1234')
     const del2 = await http('DELETE', `/admin/users/${owner.id}`, { token })
-    assert.equal(del2.status, 409)
-    assert.equal(del2.json.code, 'USER_HAS_FILES')
+    assert.equal(del2.status, 200)
+    assert.equal(del2.json.deletedFiles, 1)
+    createdUserIds.splice(createdUserIds.indexOf(owner.id), 1)
   } finally {
     await prisma.user.updateMany({ where: { id: { in: others.map((o) => o.id) } }, data: { status: 'active' } })
   }

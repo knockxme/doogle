@@ -8,6 +8,7 @@ import { inflateRawSync } from 'node:zlib'
 import { app } from '../../src/app.js'
 import { prisma } from '../../src/config/prisma.js'
 import { FRAME_PLAINTEXT, FRAME_SIZE, UPLOAD_CHUNK_PLAINTEXT } from '../../src/modules/crypto/frames.js'
+import { compareReplicas } from '../../src/modules/files/decrypt-stream.js'
 import { getBlob, memoryProvider, memoryTestHooks, resetMemoryProvider } from '../../src/modules/storage/memory-provider.js'
 import { setTestProvider } from '../../src/modules/storage/provider.js'
 import { hashToken } from '../../src/utils/crypto.js'
@@ -61,10 +62,8 @@ async function upload(bytes: Buffer, fileName = 'holiday-photo.jpg', mimeType = 
 }
 
 async function replicasOf(id: string) {
-  const file = await prisma.file.findUniqueOrThrow({ where: { id } })
-  const replicas = await prisma.fileReplica.findMany({ where: { fileId: id }, orderBy: { createdAt: 'asc' } })
-  const primary = replicas.find((r) => r.connectedAccountId === file.connectedAccountId)!
-  return { primary, secondary: replicas.find((r) => r !== primary)! }
+  const replicas = (await prisma.fileReplica.findMany({ where: { fileId: id } })).sort(compareReplicas)
+  return { primary: replicas[0]!, secondary: replicas[1]! }
 }
 
 function tamper(accountId: string, providerFileId: string, offset: number) {

@@ -23,6 +23,9 @@ export class FileUnavailableError extends Error {
 
 const BATCH_FRAMES = 8
 
+/** Oldest copy first; the id breaks ties so the order is stable. */
+export const compareReplicas = (a: FileReplica, b: FileReplica) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+
 async function collect(stream: Readable, expected: number, onStream: (s: Readable | null) => void): Promise<Buffer> {
   onStream(stream)
   try {
@@ -57,7 +60,7 @@ export async function openDecryptedStream(file: FileWithReplicas, range: ByteRan
 
   const replicas = file.replicas
     .filter((r) => r.status === 'healthy')
-    .sort((a, b) => Number(b.connectedAccountId === file.connectedAccountId) - Number(a.connectedAccountId === file.connectedAccountId) || a.createdAt.getTime() - b.createdAt.getTime())
+    .sort(compareReplicas)
   if (replicas.length === 0) throw new FileUnavailableError()
 
   const want: ByteRange = range ?? { start: 0n, end: size - 1n }
