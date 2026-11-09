@@ -1,0 +1,286 @@
+import assert from 'node:assert/strict'
+import { randomBytes, randomUUID } from 'node:crypto'
+import type { Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import test, { after, before, beforeEach } from 'node:test'
+import { inflateRawSync } from 'node:zlib'
+import { app } from '../../src/app.js'
+import { prisma } from '../../src/config/prisma.js'
+import { FRAME_PLAINTEXT, FRAME_SIZE, UPLOAD_CHUNK_PLAINTEXT } from '../../src/modules/crypto/frames.js'
+import { getBlob, memoryProvider, memoryTestHooks, resetMemoryProvider } from '../../src/modules/storage/memory-provider.js'
+import { setTestProvider } from '../../src/modules/storage/provider.js'
+import { hashToken } from '../../src/utils/crypto.js'
+import { hashPassword } from '../../src/utils/password.js'
+
+const P = FRAME_PLAINTEXT
+const C = UPLOAD_CHUNK_PLAINTEXT
+const run = randomUUID().slice(0, 8)
+const PW = 'password-123'
+let server: Server
+let base = ''
+const userIds: string[] = []
+let accountIds: string[] = []
+let owner = { id: '', token: '' }
+let data: Buffer
+let fileId = ''
+
+async function seedUser(name: string) {
+  const user = await prisma.user.create({ data: { name, email: `${name}-${run}@read.test`, passwordHash: await hashPassword(PW), role: 'member' } })
+  userIds.push(user.id)
+  const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: user.email, password: PW }) })
+  return { id: user.id, token: ((await res.json()) as { accessToken: string }).accessToken }
+}
+
+async function seedAccount(tag: string) {
+  const account = await prisma.connectedAccount.create({ data: { userId: owner.id, provider: 's3', providerAccountId: `${tag}-${randomUUID()}`, email: `${tag}@read.test`, scopes: [] } })
+  const free = 10n ** 12n
+  await prisma.storageAccount.create({ data: { connectedAccountId: account.id, totalBytes: free, usedBytes: 0n, availableBytes: free, lastSyncedAt: new Date() } })
+  accountIds.push(account.id)
+  return account
+}
+
+const auth = () => ({ Authorization: `Bearer ${owner.token}` })
+
+async function upload(bytes: Buffer, fileName = 'holiday-photo.jpg', mimeType = 'image/jpeg') {
+  const init = await fetch(`${base}/uploads/resumable/init`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify({ fileName, mimeType, sizeBytes: String(bytes.length) }) })
+  const started = (await init.json()) as { sessionId: string }
+  assert.equal(init.status, 201)
+  let last: any
+  for (let start = 0; start < bytes.length || start === 0; start += C) {
+    const end = Math.min(start + C, bytes.length)
+    const res = await fetch(`${base}/uploads/resumable/chunk/${started.sessionId}`, {
+      method: 'PUT',
+      headers: { ...auth(), 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${start}-${end - 1}/${bytes.length}` },
+      body: new Uint8Array(bytes.subarray(start, end)),
+    })
+    last = await res.json()
+    assert.ok(res.status === 200 || res.status === 201, JSON.stringify(last))
+  }
+  return last.file.id as string
+}
+
+async function replicasOf(id: string) {
+  const file = await prisma.file.findUniqueOrThrow({ where: { id } })
+  const replicas = await prisma.fileReplica.findMany({ where: { fileId: id }, orderBy: { createdAt: 'asc' } })
+  const primary = replicas.find((r) => r.connectedAccountId === file.connectedAccountId)!
+  return { primary, secondary: replicas.find((r) => r !== primary)! }
+}
+
+function tamper(accountId: string, providerFileId: string, offset: number) {
+  const blob = getBlob(accountId, providerFileId)!
+  blob[offset] = blob[offset]! ^ 0xff
+}
+
+before(async () => {
+  server = app.listen(0)
+  await new Promise((r) => server.once('listening', r))
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
+  owner = await seedUser('reader')
+  setTestProvider(memoryProvider)
+})
+
+beforeEach(async () => {
+  await prisma.connectedAccount.deleteMany({ where: { id: { in: accountIds } } })
+  accountIds = []
+  resetMemoryProvider()
+  await prisma.appSetting.update({ where: { id: 1 }, data: { routingMode: 'most_available', priorityAccountIds: [], roundRobinCursor: 0 } })
+  await seedAccount('a')
+  await seedAccount('b')
+  data = randomBytes(10 * P + 100)
+  fileId = await upload(data)
+})
+
+after(async () => {
+  setTestProvider(null)
+  await prisma.connectedAccount.deleteMany({ where: { id: { in: accountIds } } })
+  await prisma.user.deleteMany({ where: { id: { in: userIds } } })
+  await prisma.$disconnect()
+  await new Promise((r) => server.close(r))
+})
+
+const get = (path: string, headers: Record<string, string> = {}, authed = true) => fetch(base + path, { headers: { ...(authed ? auth() : {}), ...headers } })
+
+test('range seeks at frame and batch boundaries return exact bytes', async () => {
+  const n = data.length
+  const cases: [string, number, number][] = [
+    ['bytes=0-0', 0, 0],
+    ['bytes=0-9', 0, 9],
+    [`bytes=${P - 1}-${P - 1}`, P - 1, P - 1],
+    [`bytes=${P}-${P}`, P, P],
+    [`bytes=${P - 1}-${P}`, P - 1, P],
+    [`bytes=${P - 5}-${2 * P + 5}`, P - 5, 2 * P + 5],
+    [`bytes=${8 * P - 1}-${8 * P + 1}`, 8 * P - 1, 8 * P + 1],
+    [`bytes=${8 * P}-`, 8 * P, n - 1],
+    [`bytes=${n - 1}-${n - 1}`, n - 1, n - 1],
+    [`bytes=${10 * P}-${10 * P + 5000}`, 10 * P, n - 1],
+    ['bytes=-50', n - 50, n - 1],
+  ]
+  for (const [header, a, b] of cases) {
+    const res = await get(`/files/${fileId}/download`, { Range: header })
+    assert.equal(res.status, 206, header)
+    assert.equal(res.headers.get('content-range'), `bytes ${a}-${b}/${n}`, header)
+    assert.equal(res.headers.get('content-length'), String(b - a + 1), header)
+    assert.equal(res.headers.get('accept-ranges'), 'bytes')
+    const body = Buffer.from(await res.arrayBuffer())
+    assert.ok(body.equals(data.subarray(a, b + 1)), header)
+  }
+})
+
+test('full download is 200 with real mime type and filename', async () => {
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('content-type'), 'image/jpeg')
+  assert.equal(res.headers.get('content-length'), String(data.length))
+  assert.equal(res.headers.get('accept-ranges'), 'bytes')
+  assert.match(res.headers.get('content-disposition')!, /^attachment; filename="holiday-photo\.jpg"/)
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data))
+})
+
+test('non-ASCII filenames do not break the header', async () => {
+  const id = await upload(randomBytes(100), 'résumé 日本"\r\nX-Evil: 1.pdf', 'application/pdf')
+  const res = await get(`/files/${id}/download`)
+  assert.equal(res.status, 200)
+  const cd = res.headers.get('content-disposition')!
+  assert.match(cd, /^attachment; filename="[\x20-\x7e]*"; filename\*=UTF-8''/)
+  assert.ok(!/[\r\n]/.test(cd))
+  assert.ok(cd.includes('r%C3%A9sum%C3%A9'))
+  assert.equal(res.headers.get('x-evil'), null)
+  await res.arrayBuffer()
+})
+
+test('range past EOF is 416 with Content-Range */size', async () => {
+  const res = await get(`/files/${fileId}/download`, { Range: `bytes=${data.length}-` })
+  assert.equal(res.status, 416)
+  assert.equal(res.headers.get('content-range'), `bytes */${data.length}`)
+  assert.equal(((await res.json()) as any).code, 'RANGE_NOT_SATISFIABLE')
+})
+
+test('deleted first copy serves from the second and is marked lost', async () => {
+  const { primary, secondary } = await replicasOf(fileId)
+  await memoryProvider.deleteBlob({ id: primary.connectedAccountId } as any, primary.providerFileId)
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 200)
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data))
+  assert.equal((await prisma.fileReplica.findUniqueOrThrow({ where: { id: primary.id } })).status, 'lost')
+  assert.equal((await prisma.fileReplica.findUniqueOrThrow({ where: { id: secondary.id } })).status, 'healthy')
+})
+
+test('transient read failure falls back without marking lost', async () => {
+  const { primary } = await replicasOf(fileId)
+  memoryTestHooks.failReadRange.add(primary.connectedAccountId)
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 200)
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data))
+  assert.equal((await prisma.fileReplica.findUniqueOrThrow({ where: { id: primary.id } })).status, 'healthy')
+})
+
+test('tampered first copy falls back to the second, at the first and a later frame', async () => {
+  const { primary } = await replicasOf(fileId)
+  tamper(primary.connectedAccountId, primary.providerFileId, 40)
+  tamper(primary.connectedAccountId, primary.providerFileId, 9 * FRAME_SIZE + 40)
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 200)
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data))
+  assert.equal((await prisma.fileReplica.findUniqueOrThrow({ where: { id: primary.id } })).status, 'healthy')
+})
+
+test('both copies tampered in the first frame gives 502 FILE_UNAVAILABLE', async () => {
+  const { primary, secondary } = await replicasOf(fileId)
+  tamper(primary.connectedAccountId, primary.providerFileId, 40)
+  tamper(secondary.connectedAccountId, secondary.providerFileId, 40)
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 502)
+  assert.equal(((await res.json()) as any).code, 'FILE_UNAVAILABLE')
+})
+
+test('both copies tampered later aborts the connection without tampered plaintext', async () => {
+  const { primary, secondary } = await replicasOf(fileId)
+  tamper(primary.connectedAccountId, primary.providerFileId, 9 * FRAME_SIZE + 40)
+  tamper(secondary.connectedAccountId, secondary.providerFileId, 9 * FRAME_SIZE + 40)
+  const res = await get(`/files/${fileId}/download`)
+  assert.equal(res.status, 200)
+  const chunks: Buffer[] = []
+  let failed = false
+  try {
+    const reader = res.body!.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(Buffer.from(value))
+    }
+  } catch {
+    failed = true
+  }
+  const got = Buffer.concat(chunks)
+  assert.ok(failed, 'connection must be aborted')
+  assert.ok(got.length <= 9 * P, 'nothing from the tampered frame')
+  assert.ok(got.equals(data.subarray(0, got.length)))
+})
+
+test('preview token streams; disabled owner and trashed file give 404', async () => {
+  const token = randomUUID()
+  await prisma.filePreviewToken.create({ data: { fileId, userId: owner.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 60_000) } })
+  const ok = await get(`/files/preview/${token}`, { Range: 'bytes=5-20' }, false)
+  assert.equal(ok.status, 206)
+  assert.match(ok.headers.get('content-disposition')!, /^inline/)
+  assert.ok(Buffer.from(await ok.arrayBuffer()).equals(data.subarray(5, 21)))
+  await prisma.user.update({ where: { id: owner.id }, data: { status: 'disabled' } })
+  assert.equal((await get(`/files/preview/${token}`, {}, false)).status, 404)
+  await prisma.user.update({ where: { id: owner.id }, data: { status: 'active' } })
+  await prisma.file.update({ where: { id: fileId }, data: { status: 'deleted' } })
+  assert.equal((await get(`/files/preview/${token}`, {}, false)).status, 404)
+})
+
+test('public link serves decrypted bytes; disabled owner and expired link give 404', async () => {
+  const token = randomUUID()
+  const share = await prisma.fileShare.create({ data: { fileId, userId: owner.id, token, tokenHash: hashToken(token), enabled: true } })
+  const res = await get(`/public/files/${token}/download`, { Range: `bytes=${P - 3}-${P + 3}` }, false)
+  assert.equal(res.status, 206)
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data.subarray(P - 3, P + 4)))
+  const full = await get(`/public/files/${token}/preview`, {}, false)
+  assert.equal(full.status, 200)
+  assert.ok(Buffer.from(await full.arrayBuffer()).equals(data))
+  assert.equal((await get(`/public/files/${token}`, {}, false)).status, 200)
+
+  await prisma.user.update({ where: { id: owner.id }, data: { status: 'disabled' } })
+  for (const p of ['', '/download', '/preview']) assert.equal((await get(`/public/files/${token}${p}`, {}, false)).status, 404, p)
+  await prisma.user.update({ where: { id: owner.id }, data: { status: 'active' } })
+
+  await prisma.fileShare.update({ where: { id: share.id }, data: { expiresAt: new Date(Date.now() - 1000) } })
+  for (const p of ['', '/download', '/preview']) assert.equal((await get(`/public/files/${token}${p}`, {}, false)).status, 404, p)
+})
+
+function unzip(zip: Buffer) {
+  const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+  const count = zip.readUInt16LE(eocd + 10)
+  let p = zip.readUInt32LE(eocd + 16)
+  const out = new Map<string, Buffer>()
+  for (let i = 0; i < count; i++) {
+    const method = zip.readUInt16LE(p + 10)
+    const compSize = zip.readUInt32LE(p + 20)
+    const nameLen = zip.readUInt16LE(p + 28)
+    const extraLen = zip.readUInt16LE(p + 30)
+    const commentLen = zip.readUInt16LE(p + 32)
+    const local = zip.readUInt32LE(p + 42)
+    const name = zip.subarray(p + 46, p + 46 + nameLen).toString()
+    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28)
+    const raw = zip.subarray(start, start + compSize)
+    out.set(name, method === 8 ? inflateRawSync(raw) : Buffer.from(raw))
+    p += 46 + nameLen + extraLen + commentLen
+  }
+  return out
+}
+
+test('batch zip entries decrypt and an unreadable file is skipped', async () => {
+  const small = randomBytes(5000)
+  const id2 = await upload(small, 'notes.txt', 'text/plain')
+  const id3 = await upload(randomBytes(300), 'gone.bin', 'application/octet-stream')
+  for (const r of await prisma.fileReplica.findMany({ where: { fileId: id3 } })) await memoryProvider.deleteBlob({ id: r.connectedAccountId } as any, r.providerFileId)
+  const res = await fetch(`${base}/files/batch-download`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIds: [fileId, id2, id3] }) })
+  assert.equal(res.status, 200)
+  const entries = unzip(Buffer.from(await res.arrayBuffer()))
+  assert.deepEqual([...entries.keys()].sort(), ['holiday-photo.jpg', 'notes.txt'])
+  assert.ok(entries.get('holiday-photo.jpg')!.equals(data))
+  assert.ok(entries.get('notes.txt')!.equals(small))
+})

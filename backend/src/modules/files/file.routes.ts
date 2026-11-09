@@ -6,11 +6,10 @@ import { env } from '../../config/env.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service.js'
-import { deleteS3Object, syncS3Quota, createS3Client, getS3ConfigForAccount } from '../s3/s3.service.js'
+import { deleteS3Object, syncS3Quota } from '../s3/s3.service.js'
 import { streamProviderFile } from './stream-file.js'
-import { googleDownloadExportMimeTypes, normalizeHeaders, withExtension } from './stream-google-file.js'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
-import { Readable } from 'node:stream'
+import { openDecryptedStream, readableFileArgs } from './decrypt-stream.js'
+import { finished } from 'node:stream/promises'
 import { ZipArchive } from 'archiver'
 import { createAuditLog } from '../../utils/audit.js'
 
@@ -23,9 +22,9 @@ fileRouter.get('/preview/:token', async (req, res, next) => {
     const token = String(req.params.token)
     const preview = await prisma.filePreviewToken.findFirst({
       where: { tokenHash: hashToken(token), expiresAt: { gt: new Date() } },
-      include: { file: { include: { connectedAccount: true } } },
+      include: { file: { ...readableFileArgs, include: { ...readableFileArgs.include, user: { select: { status: true } } } } },
     })
-    if (!preview || preview.file.status !== 'active') return res.status(404).json({ code: 'PREVIEW_NOT_FOUND', message: 'Preview token not found.' })
+    if (!preview || preview.file.status !== 'active' || preview.file.user.status !== 'active') return res.status(404).json({ code: 'PREVIEW_NOT_FOUND', message: 'Preview token not found.' })
     return streamProviderFile(preview.file, req.headers.range, res, { disposition: 'inline' })
   } catch (error) {
     return next(error)
@@ -307,7 +306,7 @@ fileRouter.post('/:id/preview-token', async (req: AuthRequest, res, next) => {
 fileRouter.get('/:id/download', async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, ...readableFileArgs })
     return streamProviderFile(file, req.headers.range, res, { disposition: 'attachment' })
   } catch (error) {
     return next(error)
@@ -331,7 +330,7 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
     const body = batchFileSchema.parse(req.body)
     const files = await prisma.file.findMany({
       where: { id: { in: body.fileIds }, userId: req.user!.id, status: 'active' },
-      include: { connectedAccount: true }
+      ...readableFileArgs,
     })
     if (files.length === 0) return res.status(404).json({ code: 'FILES_NOT_FOUND', message: 'No files found.' })
 
@@ -339,37 +338,21 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
     res.setHeader('Content-Disposition', 'attachment; filename="9drive-download.zip"')
 
     const archive = new ZipArchive({ zlib: { level: 9 } })
-    archive.on('error', (err: any) => {
-      throw err
+    archive.on('error', (err: Error) => {
+      console.error('Zip archive failed:', err.name)
+      res.destroy()
     })
+    res.on('close', () => archive.abort())
     archive.pipe(res)
 
     for (const file of files) {
+      if (res.destroyed) break
       try {
-        let stream: Readable
-        let fileName = file.name
-        if (file.provider === 's3') {
-          const config = await getS3ConfigForAccount(file.connectedAccountId)
-          const client = createS3Client(config)
-          const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: file.providerFileId }))
-          stream = response.Body as Readable
-        } else {
-          const auth = await getAuthedGoogleClient(file.connectedAccount)
-          const headers = normalizeHeaders(await auth.getRequestHeaders())
-          const exportTarget = googleDownloadExportMimeTypes[file.mimeType]
-          if (exportTarget) {
-            fileName = withExtension(file.name, exportTarget.extension)
-          }
-          const url = exportTarget
-            ? `https://www.googleapis.com/drive/v3/files/${file.providerFileId}/export?mimeType=${encodeURIComponent(exportTarget.mimeType)}`
-            : `https://www.googleapis.com/drive/v3/files/${file.providerFileId}?alt=media`
-          const response = await fetch(url, { headers })
-          if (!response.ok || !response.body) continue
-          stream = Readable.fromWeb(response.body as any)
-        }
-        archive.append(stream, { name: fileName })
+        const stream = await openDecryptedStream(file, null)
+        archive.append(stream, { name: file.name })
+        await finished(stream)
       } catch (err) {
-        console.error(`Failed to add file ${file.name} to zip:`, err)
+        console.error(`Skipped file ${file.id} in zip:`, err instanceof Error ? err.name : 'error')
       }
     }
 

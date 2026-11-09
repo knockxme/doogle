@@ -1,18 +1,12 @@
-import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import type { ConnectedAccount, File, S3StorageConfig } from '@prisma/client'
-import type { Response } from 'express'
 import type { Readable } from 'node:stream'
 import { prisma } from '../../config/prisma.js'
 import { decryptText } from '../../utils/crypto.js'
 
 type S3Config = S3StorageConfig
 type FileWithAccount = Omit<File, 'wrappedFileKey' | 'encryptedSizeBytes'> & { connectedAccount: ConnectedAccount }
-type StreamOptions = { disposition?: 'inline' | 'attachment' }
-
-function contentDisposition(type: 'inline' | 'attachment', fileName: string) {
-  return `${type}; filename="${fileName.replaceAll('"', '')}"`
-}
 
 export function createS3Client(config: S3Config) {
   return new S3Client({
@@ -80,21 +74,4 @@ export async function syncS3Quota(accountId: string) {
       lastSyncedAt: new Date(),
     },
   })
-}
-
-export async function streamS3File(file: FileWithAccount, range: string | undefined, res: Response, options: StreamOptions = {}) {
-  const config = await getS3ConfigForAccount(file.connectedAccountId)
-  const client = createS3Client(config)
-  const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: file.providerFileId, Range: range }))
-
-  res.status(response.ContentRange ? 206 : 200)
-  res.setHeader('Content-Type', response.ContentType ?? file.mimeType)
-  res.setHeader('Accept-Ranges', 'bytes')
-  if (options.disposition) res.setHeader('Content-Disposition', contentDisposition(options.disposition, file.name))
-  if (response.ContentLength !== undefined) res.setHeader('Content-Length', response.ContentLength.toString())
-  if (response.ContentRange) res.setHeader('Content-Range', response.ContentRange)
-
-  const body = response.Body as Readable | undefined
-  if (!body) return res.end()
-  return body.pipe(res)
 }
