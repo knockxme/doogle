@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import type { Server } from 'node:http'
+import { request, type Server } from 'node:http'
+import type { Readable } from 'node:stream'
 import type { AddressInfo } from 'node:net'
 import test, { after, before, beforeEach } from 'node:test'
 import { inflateRawSync } from 'node:zlib'
@@ -283,4 +284,50 @@ test('batch zip entries decrypt and an unreadable file is skipped', async () => 
   assert.deepEqual([...entries.keys()].sort(), ['holiday-photo.jpg', 'notes.txt'])
   assert.ok(entries.get('holiday-photo.jpg')!.equals(data))
   assert.ok(entries.get('notes.txt')!.equals(small))
+})
+
+test('zip aborts instead of hanging when a later frame is corrupt on both copies', async () => {
+  const { primary, secondary } = await replicasOf(fileId)
+  tamper(primary.connectedAccountId, primary.providerFileId, 9 * FRAME_SIZE + 40)
+  tamper(secondary.connectedAccountId, secondary.providerFileId, 9 * FRAME_SIZE + 40)
+  const res = await fetch(`${base}/files/batch-download`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIds: [fileId] }), signal: AbortSignal.timeout(15000) })
+  assert.equal(res.status, 200)
+  await assert.rejects(res.arrayBuffer())
+})
+
+test('zip client disconnect stops reading from the provider', async () => {
+  const big = randomBytes(80 * P)
+  const bigId = await upload(big, 'big.bin', 'application/octet-stream')
+  let reads = 0
+  const streams: Readable[] = []
+  setTestProvider({
+    ...memoryProvider,
+    readRange: async (a, id, st, en) => {
+      reads++
+      const r = await memoryProvider.readRange(a, id, st, en)
+      streams.push(r)
+      return r
+    },
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const req = request(`${base}/files/batch-download`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' } }, (res) => {
+        res.once('data', () => {
+          req.destroy()
+          resolve()
+        })
+        res.on('error', () => undefined)
+      })
+      req.on('error', (e) => (/aborted|hang up|ECONNRESET/i.test(String(e)) ? undefined : reject(e)))
+      req.end(JSON.stringify({ fileIds: [bigId] }))
+    })
+    await new Promise((r) => setTimeout(r, 500))
+    const settled = reads
+    await new Promise((r) => setTimeout(r, 500))
+    assert.equal(reads, settled, 'no further provider reads after disconnect')
+    assert.ok(reads < 10, `read ${reads} of 10 batches`)
+    assert.ok(streams.every((s) => s.destroyed), 'provider streams destroyed')
+  } finally {
+    setTestProvider(memoryProvider)
+  }
 })

@@ -130,10 +130,11 @@ export async function openDecryptedStream(file: FileWithReplicas, range: ByteRan
       busy = true
       void (async () => {
         try {
-          const batch = pending ?? (await readBatch())
+          let batch = pending ?? (await readBatch())
           pending = null
+          while (batch !== null && batch.length === 0 && nextFrame <= span.lastFrame) batch = await readBatch()
           busy = false
-          if (batch === null) this.push(null)
+          if (batch === null || batch.length === 0) this.push(null)
           else for (const part of batch) this.push(part)
         } catch (err) {
           busy = false

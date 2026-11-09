@@ -9,6 +9,7 @@ import { getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service
 import { deleteS3Object, syncS3Quota } from '../s3/s3.service.js'
 import { streamProviderFile } from './stream-file.js'
 import { openDecryptedStream, readableFileArgs } from './decrypt-stream.js'
+import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { ZipArchive } from 'archiver'
 import { createAuditLog } from '../../utils/audit.js'
@@ -342,18 +343,35 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
       console.error('Zip archive failed:', err.name)
       res.destroy()
     })
-    res.on('close', () => archive.abort())
+    let current: Readable | null = null
+    res.on('close', () => {
+      current?.destroy()
+      archive.destroy()
+    })
     archive.pipe(res)
 
     for (const file of files) {
-      if (res.destroyed) break
+      if (res.destroyed) return
+      let stream: Readable
       try {
-        const stream = await openDecryptedStream(file, null)
-        archive.append(stream, { name: file.name })
+        stream = await openDecryptedStream(file, null)
+      } catch (err) {
+        // Nothing has been added for this file yet, so skipping it keeps the zip valid.
+        console.error(`Skipped file ${file.id} in zip:`, err instanceof Error ? err.name : 'error')
+        continue
+      }
+      current = stream
+      archive.append(stream, { name: file.name })
+      try {
         await finished(stream)
       } catch (err) {
-        console.error(`Skipped file ${file.id} in zip:`, err instanceof Error ? err.name : 'error')
+        // The entry has started; the zip can no longer be valid. Abort the download.
+        console.error(`Zip aborted at file ${file.id}:`, err instanceof Error ? err.name : 'error')
+        archive.destroy()
+        res.destroy()
+        return
       }
+      current = null
     }
 
     await archive.finalize()
