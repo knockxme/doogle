@@ -13,9 +13,10 @@
     "seed:google-config": "tsx src/scripts/seed-google-config.ts",
     "seed:google-config:docker": "tsx src/scripts/seed-google-config-if-present.ts",
     "test": "node --import tsx --test test/*.test.ts",
-    "test:integration": "node --import tsx --test --test-concurrency=1 test/integration/*.test.ts",
+    "test:integration": "DATABASE_URL=mysql://root:root@127.0.0.1:13306/family_drive_test sh -c \"prisma migrate deploy && node --import tsx --test --test-concurrency=1 test/integration/*.test.ts\"",
     "test:s3": "tsx src/scripts/test-s3-connection.ts",
-    "test:api-upload": "tsx src/scripts/test-api-upload.ts"
+    "test:api-upload": "tsx src/scripts/test-api-upload.ts",
+    "admin:create": "tsx src/scripts/create-admin.ts"
   },
   "keywords": [],
   "author": "",

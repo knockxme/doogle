@@ -3,6 +3,7 @@ import { google } from 'googleapis'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
+import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { decryptText, encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
@@ -79,7 +80,7 @@ async function createGoogleConnectUrl(req: AuthRequest) {
   })
 }
 
-connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const body = s3ConnectSchema.parse(req.body)
     const providerConfig = await prisma.providerConfig.findFirstOrThrow({ where: { provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
