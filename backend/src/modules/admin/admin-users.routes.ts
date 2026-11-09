@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from '../files/delete-blobs.js'
+import { failUpload } from '../uploads/encrypted-upload.js'
 import { hashPassword } from '../../utils/password.js'
 import { assertNotLastAdmin } from './admin-rules.js'
 
@@ -109,7 +110,11 @@ adminUsersRouter.delete('/:id', async (req, res, next) => {
     if (!target) return res.status(404).json({ code: 'USER_NOT_FOUND', message: 'User not found.' })
     assertNotLastAdmin(await countActiveAdmins(), target)
     if ((await prisma.connectedAccount.count({ where: { userId: target.id } })) > 0) return res.status(409).json({ code: 'USER_HAS_CONNECTED_ACCOUNTS', message: 'User still owns connected accounts and cannot be deleted.' })
-    // Files go first, with both copies. A file whose delete fails stops the user delete so nothing is left unowned.
+    // Stop new activity, then abort in-flight uploads so their provider sessions and blobs are cleaned up before any cascade.
+    await prisma.user.update({ where: { id: target.id }, data: { status: 'disabled' } })
+    const sessions = await prisma.uploadSession.findMany({ where: { userId: target.id, status: 'uploading' }, select: { id: true } })
+    for (const session of sessions) await failUpload(session.id, 'User was deleted.')
+    // Files go next, with both copies. A file whose delete fails stops the user delete so nothing is left unowned.
     const files = await prisma.file.findMany({ where: { userId: target.id }, ...deletableFileArgs })
     for (const file of files) {
       await deleteFileCopies(file)

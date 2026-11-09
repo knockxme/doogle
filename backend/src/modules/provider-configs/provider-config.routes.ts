@@ -45,7 +45,12 @@ providerConfigRouter.get('/', async (req: AuthRequest, res, next) => {
 
 providerConfigRouter.delete('/:id', async (req: AuthRequest, res, next) => {
   try {
-    await prisma.providerConfig.deleteMany({ where: { id: String(req.params.id), userId: req.user!.id } })
+    const id = String(req.params.id)
+    // Deleting a config cascades to its accounts and their replica rows, which would strand files.
+    if ((await prisma.connectedAccount.count({ where: { providerConfigId: id } })) > 0) {
+      return res.status(409).json({ code: 'PROVIDER_CONFIG_IN_USE', message: 'Connected accounts still use this configuration.' })
+    }
+    await prisma.providerConfig.deleteMany({ where: { id, userId: req.user!.id } })
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)

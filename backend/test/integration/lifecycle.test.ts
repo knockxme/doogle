@@ -27,12 +27,16 @@ let bob = { id: '', token: '' }
 let accounts: { id: string }[] = []
 
 let providerCalls: string[] = []
+let abortCalls: string[] = []
 let deleteBlobOverride: StorageProvider['deleteBlob'] | null = null
 const spy: StorageProvider = {
   beginUpload: (a, n, s) => memoryProvider.beginUpload(a, n, s),
   putChunk: (a, s, o, c, t) => memoryProvider.putChunk(a, s, o, c, t),
   committedOffset: (a, s, t) => memoryProvider.committedOffset(a, s, t),
-  abortUpload: (a, s) => memoryProvider.abortUpload(a, s),
+  abortUpload: (a, s) => {
+    abortCalls.push(a.id)
+    return memoryProvider.abortUpload(a, s)
+  },
   readRange: (a, id, s, e) => {
     providerCalls.push('readRange')
     return memoryProvider.readRange(a, id, s, e)
@@ -96,6 +100,7 @@ beforeEach(async () => {
   accountIds = []
   resetMemoryProvider()
   providerCalls = []
+  abortCalls = []
   deleteBlobOverride = null
   await prisma.appSetting.update({ where: { id: 1 }, data: { routingMode: 'most_available', priorityAccountIds: [], roundRobinCursor: 0 } })
   accounts = [await seedAccount('a'), await seedAccount('b')]
@@ -362,4 +367,37 @@ test('deleting a folder removes both copies of contained files', async () => {
   for (const c of copies) assert.equal(getBlob(c.connectedAccountId, c.providerFileId), undefined)
   assert.equal(await prisma.file.count({ where: { id: keep } }), 1)
   assert.ok((await blobsOf(keep)).every(Boolean))
+})
+
+test('deleting a user aborts their open uploads before removing them', async () => {
+  const victim = await seedUser('uploader')
+  const init = await api('POST', '/uploads/resumable/init', victim.token, { fileName: 'open.jpg', mimeType: 'image/jpeg', sizeBytes: '5000' })
+  assert.equal(init.status, 201, init.text)
+  const sessionId = init.json.sessionId as string
+  const session = await prisma.uploadSession.findUniqueOrThrow({ where: { id: sessionId }, include: { replicas: true } })
+  assert.equal(session.replicas.length, 2)
+  const res = await api('DELETE', `/admin/users/${victim.id}`, admin.token)
+  assert.equal(res.status, 200, res.text)
+  assert.deepEqual([...abortCalls].sort(), session.replicas.map((r) => r.connectedAccountId).sort())
+  assert.equal(await prisma.uploadSession.count({ where: { id: sessionId } }), 0)
+  assert.equal(await prisma.user.count({ where: { id: victim.id } }), 0)
+  assert.equal(await prisma.orphanBlob.count({ where: { connectedAccountId: { in: accounts.map((a) => a.id) } } }), 0)
+})
+
+test('a provider config in use by connected accounts cannot be deleted', async () => {
+  const config = await prisma.providerConfig.create({ data: { userId: admin.id, provider: 'google_drive', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', redirectUri: 'http://localhost/cb', scopes: [], status: 'disabled' } })
+  const acct = await prisma.connectedAccount.create({ data: { userId: admin.id, providerConfigId: config.id, provider: 's3', providerAccountId: `pc-${randomUUID()}`, email: 'pc@life.test', scopes: [] } })
+  try {
+    const res = await api('DELETE', `/provider-configs/${config.id}`, admin.token)
+    assert.equal(res.status, 409)
+    assert.equal(res.json.code, 'PROVIDER_CONFIG_IN_USE')
+    assert.equal(await prisma.providerConfig.count({ where: { id: config.id } }), 1)
+    assert.equal(await prisma.connectedAccount.count({ where: { id: acct.id } }), 1)
+    await prisma.connectedAccount.delete({ where: { id: acct.id } })
+    assert.equal((await api('DELETE', `/provider-configs/${config.id}`, admin.token)).status, 200)
+    assert.equal(await prisma.providerConfig.count({ where: { id: config.id } }), 0)
+  } finally {
+    await prisma.connectedAccount.deleteMany({ where: { id: acct.id } })
+    await prisma.providerConfig.deleteMany({ where: { id: config.id } })
+  }
 })
