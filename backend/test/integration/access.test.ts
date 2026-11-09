@@ -168,3 +168,39 @@ test('failed logins are rate limited per email and IP', async () => {
   assert.equal(blocked.json.code, 'AUTH_RATE_LIMITED')
   assert.equal((await login('rl')).status, 429)
 })
+
+test('rotating the leftmost X-Forwarded-For does not bypass the login limiter', async () => {
+  await seedUser('xff', 'member')
+  for (let i = 0; i < 5; i++) {
+    const r = await http('POST', '/auth/login', { body: { email: email('xff'), password: 'nope-nope' }, headers: { 'X-Forwarded-For': `203.0.113.${i + 1}, 10.0.0.9` } })
+    assert.equal(r.status, 401)
+  }
+  const r = await http('POST', '/auth/login', { body: { email: email('xff'), password: 'nope-nope' }, headers: { 'X-Forwarded-For': '203.0.113.99, 10.0.0.9' } })
+  assert.equal(r.status, 429)
+  assert.equal(r.json.code, 'AUTH_RATE_LIMITED')
+})
+
+test('delete refuses users with connected accounts', async () => {
+  const admin = await seedUser('adm4', 'admin')
+  const token = (await login('adm4')).json.accessToken
+  const u = await seedUser('hasacct', 'member')
+  await prisma.connectedAccount.create({ data: { userId: u.id, provider: 's3', providerAccountId: `acct2-${run}`, email: 'a@b.c', scopes: [] } })
+  const r = await http('DELETE', `/admin/users/${u.id}`, { token })
+  assert.equal(r.status, 409)
+  assert.equal(r.json.code, 'USER_HAS_CONNECTED_ACCOUNTS')
+  assert.ok(admin.id)
+})
+
+test('Google OAuth callback rejects non-connect flows', async () => {
+  const config = await prisma.providerConfig.create({ data: { provider: 'google_drive', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', redirectUri: 'http://localhost/cb', scopes: [], status: 'disabled' } })
+  try {
+    const state = `st-${run}`
+    await prisma.oauthState.create({ data: { providerConfigId: config.id, flow: 'login', stateHash: hashToken(state), expiresAt: new Date(Date.now() + 60_000) } })
+    const r = await http('GET', `/connected-accounts/google/callback?code=abc&state=${state}`)
+    assert.equal(r.status, 400)
+    assert.equal(r.json.code, 'GOOGLE_OAUTH_FLOW_INVALID')
+    assert.equal(await prisma.user.count({ where: { email: { contains: run } } }), createdUserIds.length)
+  } finally {
+    await prisma.providerConfig.delete({ where: { id: config.id } })
+  }
+})

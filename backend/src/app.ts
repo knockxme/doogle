@@ -18,7 +18,7 @@ import { adminUsersRouter } from './modules/admin/admin-users.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
 
 export const app = express()
-app.set('trust proxy', true)
+app.set('trust proxy', 1)
 
 app.use(cors({ origin: env.FRONTEND_URL }))
 app.use(express.json({ limit: '1mb' }))

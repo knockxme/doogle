@@ -104,6 +104,7 @@ adminUsersRouter.delete('/:id', async (req, res, next) => {
     assertNotLastAdmin(await countActiveAdmins(), target)
     // Permanent file removal is wired in Task 9; until then refuse deleting users who own files.
     if ((await prisma.file.count({ where: { userId: target.id } })) > 0) return res.status(409).json({ code: 'USER_HAS_FILES', message: 'User still owns files and cannot be deleted yet.' })
+    if ((await prisma.connectedAccount.count({ where: { userId: target.id } })) > 0) return res.status(409).json({ code: 'USER_HAS_CONNECTED_ACCOUNTS', message: 'User still owns connected accounts and cannot be deleted.' })
     await prisma.user.delete({ where: { id: target.id } })
     return res.json({ status: 'ok' })
   } catch (error) {
