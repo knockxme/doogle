@@ -43,6 +43,10 @@ export function buildS3ObjectKey(config: Pick<S3Config, 'prefix'>, userId: strin
   return `${config.prefix.replace(/^\/+|\/+$/g, '')}/${userId}/${fileId}/${safeFileName(fileName)}`
 }
 
+export function buildBlobKey(config: Pick<S3Config, 'prefix'>, blobName: string) {
+  return `${config.prefix.replace(/^\/+|\/+$/g, '')}/${blobName}`
+}
+
 export async function uploadS3Object(config: S3Config, key: string, body: NodeJS.ReadableStream, mimeType: string) {
   const client = createS3Client(config)
   await new Upload({

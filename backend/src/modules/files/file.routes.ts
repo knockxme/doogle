@@ -5,7 +5,7 @@ import { prisma } from '../../config/prisma.js'
 import { env } from '../../config/env.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
-import { getAuthedGoogleClient, syncGoogleAppFolderFiles, syncGoogleQuota } from '../google/google.service.js'
+import { getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service.js'
 import { deleteS3Object, syncS3Quota, createS3Client, getS3ConfigForAccount } from '../s3/s3.service.js'
 import { streamProviderFile } from './stream-file.js'
 import { googleDownloadExportMimeTypes, normalizeHeaders, withExtension } from './stream-google-file.js'
@@ -229,26 +229,6 @@ fileRouter.get('/shared-links', async (req: AuthRequest, res, next) => {
           file: { ...share.file, sizeBytes: share.file.sizeBytes.toString() },
         }
       })
-    })
-  } catch (error) {
-    return next(error)
-  }
-})
-
-fileRouter.post('/sync-google', async (req: AuthRequest, res, next) => {
-  try {
-    const body = z.object({ connectedAccountId: z.string().min(1).optional() }).parse(req.body ?? {})
-    const accounts = await prisma.connectedAccount.findMany({
-      where: { userId: req.user!.id, provider: 'google_drive', status: 'connected', ...(body.connectedAccountId ? { id: body.connectedAccountId } : {}) },
-      select: { id: true },
-    })
-
-    const results = []
-    for (const account of accounts) results.push(await syncGoogleAppFolderFiles(account.id, req.user!.id))
-
-    return res.json({
-      status: 'ok',
-      results,
     })
   } catch (error) {
     return next(error)
