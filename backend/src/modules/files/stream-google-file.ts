@@ -2,7 +2,7 @@ import type { Response } from 'express'
 import type { ConnectedAccount, File } from '@prisma/client'
 import { getAuthedGoogleClient } from '../google/google.service.js'
 
-type FileWithAccount = File & { connectedAccount: ConnectedAccount }
+type FileWithAccount = Omit<File, 'wrappedFileKey' | 'encryptedSizeBytes'> & { connectedAccount: ConnectedAccount }
 type StreamOptions = { disposition?: 'inline' | 'attachment' }
 
 export const googleDownloadExportMimeTypes: Record<string, { mimeType: string; extension: string }> = {

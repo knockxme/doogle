@@ -123,6 +123,7 @@ export async function reserveUpload(args: { userId: string; plainSize: bigint; f
     if (!pair) throw new PoolError('NO_ACCOUNT_WITH_ENOUGH_SPACE', 'No two storage accounts have enough free space.', 507)
 
     const session = await tx.uploadSession.create({
+      omit: { wrappedFileKey: false },
       data: {
         userId: args.userId,
         folderId: args.folderId,

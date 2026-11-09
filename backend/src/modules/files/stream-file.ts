@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { streamGoogleFile } from './stream-google-file.js'
 import { streamS3File } from '../s3/s3.service.js'
 
-type FileWithAccount = File & { connectedAccount: ConnectedAccount }
+type FileWithAccount = Omit<File, 'wrappedFileKey' | 'encryptedSizeBytes'> & { connectedAccount: ConnectedAccount }
 type StreamOptions = { disposition?: 'inline' | 'attachment' }
 
 export function streamProviderFile(file: FileWithAccount, range: string | undefined, res: Response, options: StreamOptions = {}) {

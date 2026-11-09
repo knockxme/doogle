@@ -29,6 +29,10 @@ export function setTestProvider(p: StorageProvider | null) {
   testProvider = p
 }
 
+export function hasTestProvider() {
+  return testProvider !== null
+}
+
 export function providerFor(account: Pick<ConnectedAccount, 'provider'>): StorageProvider {
   if (testProvider) return testProvider
   if (account.provider === 'google_drive') return googleProvider

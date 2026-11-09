@@ -7,7 +7,7 @@ import { prisma } from '../../config/prisma.js'
 import { decryptText } from '../../utils/crypto.js'
 
 type S3Config = S3StorageConfig
-type FileWithAccount = File & { connectedAccount: ConnectedAccount }
+type FileWithAccount = Omit<File, 'wrappedFileKey' | 'encryptedSizeBytes'> & { connectedAccount: ConnectedAccount }
 type StreamOptions = { disposition?: 'inline' | 'attachment' }
 
 function contentDisposition(type: 'inline' | 'attachment', fileName: string) {
@@ -33,14 +33,6 @@ export async function getS3ConfigForAccount(accountId: string, userId?: string) 
 export async function testS3Connection(config: S3Config) {
   const client = createS3Client(config)
   await client.send(new HeadBucketCommand({ Bucket: config.bucket }))
-}
-
-function safeFileName(name: string) {
-  return name.replace(/[\\/]+/g, '-').replace(/[\u0000-\u001f\u007f]+/g, '').slice(0, 180) || 'file'
-}
-
-export function buildS3ObjectKey(config: Pick<S3Config, 'prefix'>, userId: string, fileId: string, fileName: string) {
-  return `${config.prefix.replace(/^\/+|\/+$/g, '')}/${userId}/${fileId}/${safeFileName(fileName)}`
 }
 
 export function buildBlobKey(config: Pick<S3Config, 'prefix'>, blobName: string) {
