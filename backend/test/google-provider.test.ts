@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { ConnectedAccount } from '@prisma/client'
-import { classifyGoogleClientError, classifyGoogleError, googleDeps, googleProvider } from '../src/modules/storage/google-provider.js'
+import { classifyGoogleClientError, classifyTokenError, classifyGoogleError, googleDeps, googleProvider } from '../src/modules/storage/google-provider.js'
 import { ProviderQuotaError, ProviderUnavailableError } from '../src/modules/storage/provider.js'
 
 const body = (reason: string) => JSON.stringify({ error: { errors: [{ reason }], message: 'x' } })
@@ -12,7 +12,10 @@ describe('classifyGoogleError', () => {
   })
   for (const reason of ['userRateLimitExceeded', 'dailyLimitExceeded', 'uploadQuotaExceeded', 'storageQuotaExceeded'])
     it(`403 ${reason} -> quota`, () => assert.ok(classifyGoogleError(403, body(reason)) instanceof ProviderQuotaError))
-  it('403 other reason is not quota', () => assert.ok(!(classifyGoogleError(403, body('forbidden')) instanceof ProviderQuotaError)))
+  it('403 other reason is a plain error, not quota and not an account failure', () => {
+    const e = classifyGoogleError(403, body('forbidden'))
+    assert.equal(e.constructor, Error)
+  })
   it('401 -> unavailable, notFound false', () => {
     const e = classifyGoogleError(401, '')
     assert.ok(e instanceof ProviderUnavailableError)
@@ -69,5 +72,15 @@ describe('google provider with stubbed fetch', () => {
     const a = classifyGoogleClientError({ response: { status: 401, data: '' } })
     assert.ok(a instanceof ProviderUnavailableError && !a.notFound)
     assert.ok(classifyGoogleClientError(new Error('invalid_grant')) instanceof ProviderUnavailableError)
+    const gaxios = classifyGoogleClientError({ message: 'x', response: { status: 400, data: { error: 'invalid_grant' } } })
+    assert.ok(gaxios instanceof ProviderUnavailableError && !gaxios.notFound)
+  })
+  it('classifyGoogleClientError keeps non-quota 403 and network errors plain', () => {
+    assert.equal(classifyGoogleClientError({ response: { status: 403, data: '' } }).constructor, Error)
+    assert.equal(classifyGoogleClientError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })).constructor, Error)
+  })
+  it('token refresh: invalid_grant is an account failure, a network failure is not', () => {
+    assert.ok(classifyTokenError(new Error('invalid_grant')) instanceof ProviderUnavailableError)
+    assert.equal(classifyTokenError(new Error('getaddrinfo ENOTFOUND oauth2.googleapis.com')).constructor, Error)
   })
 })

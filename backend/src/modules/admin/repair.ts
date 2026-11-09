@@ -84,8 +84,26 @@ async function persistState(replicaRowId: string, state: ReplicaUploadState) {
 }
 
 
-async function repairOne(file: RepairFile): Promise<'repaired' | 'failed' | 'gone'> {
-  const survivor = file.replicas.find(isUsableCopy)
+/** A failure on the survivor being read, kept apart from failures on the account being written. */
+class SourceError extends Error {
+  constructor(readonly cause: unknown) {
+    super('Source copy could not be read.')
+  }
+}
+
+const reloadFile = (id: string) => prisma.file.findUnique({
+  where: { id },
+  omit: { encryptedSizeBytes: false },
+  include: { replicas: { include: { connectedAccount: { select: { status: true } } } } },
+})
+
+async function repairOne(snapshot: RepairFile): Promise<'repaired' | 'failed' | 'gone'> {
+  // The page was read earlier; account and copy status may have changed since.
+  const file = await reloadFile(snapshot.id)
+  if (!file) return 'gone'
+  const usable = file.replicas.filter(isUsableCopy)
+  if (usable.length >= 2) return 'gone'
+  const survivor = usable[0]
   if (!survivor) return 'failed'
   const total = file.encryptedSizeBytes
   const reserved = await reserveRepairTarget({ userId: file.userId, fileName: 'repair', encryptedBytes: total, excludeAccountIds: file.replicas.map((r) => r.connectedAccountId) })
@@ -105,8 +123,7 @@ async function repairOne(file: RepairFile): Promise<'repaired' | 'failed' | 'gon
       try {
         bytes = await collect(await providerFor(source).readRange(source, survivor.providerFileId, offset, end - 1n), Number(end - offset))
       } catch (err) {
-        await noteSourceFailure(survivor.id, source.id, err)
-        throw err
+        throw new SourceError(err)
       }
       const result = await targetProvider.putChunk(target, state, offset, bytes, total)
       state = result.state
@@ -117,17 +134,24 @@ async function repairOne(file: RepairFile): Promise<'repaired' | 'failed' | 'gon
     if (!state.providerFileId) throw new Error('Provider reported no file ID for the new copy.')
   } catch (err) {
     await abandon(session.id, target, state, 'Copy failed.')
-    if (err instanceof ProviderQuotaError) await prisma.connectedAccount.updateMany({ where: { id: target.id }, data: { pausedUntil: new Date(Date.now() + PAUSE_MS) } })
-    if (err instanceof ProviderUnavailableError && !err.notFound) await markAccountUnhealthy(target.id, 'Storage provider refused access.').catch(() => undefined)
+    if (err instanceof SourceError) await noteSourceFailure(survivor.id, survivor.connectedAccountId, err.cause)
+    else {
+      if (err instanceof ProviderQuotaError) await prisma.connectedAccount.updateMany({ where: { id: target.id }, data: { pausedUntil: new Date(Date.now() + PAUSE_MS) } })
+      if (err instanceof ProviderUnavailableError && !err.notFound) await markAccountUnhealthy(target.id, 'Storage provider refused access.').catch(() => undefined)
+    }
     return 'failed'
   }
 
   const providerFileId = state.providerFileId!
   const outcome = await prisma.$transaction(async (tx) => {
-    if (!(await tx.file.findUnique({ where: { id: file.id }, select: { id: true } }))) return 'gone' as const
-    const stale = file.replicas.filter((r) => !isUsableCopy(r))
-    for (const r of stale) {
-      await tx.fileReplica.deleteMany({ where: { id: r.id } })
+    // Decide from the rows as they are now, not from the snapshot taken before the copy.
+    const current = await tx.file.findUnique({ where: { id: file.id }, select: { id: true, replicas: { include: { connectedAccount: { select: { status: true } } } } } })
+    if (!current) return 'gone' as const
+    const nowUsable = current.replicas.filter(isUsableCopy)
+    if (nowUsable.length >= 2) return 'gone' as const
+    if (nowUsable.length === 0) return 'failed' as const
+    for (const r of current.replicas.filter((x) => !isUsableCopy(x))) {
+      await tx.fileReplica.delete({ where: { id: r.id } })
       await tx.orphanBlob.create({ data: { connectedAccountId: r.connectedAccountId, providerFileId: r.providerFileId } })
     }
     await tx.fileReplica.create({ data: { fileId: file.id, connectedAccountId: target.id, providerFileId, status: 'healthy', sizeBytes: total } })
@@ -139,12 +163,13 @@ async function repairOne(file: RepairFile): Promise<'repaired' | 'failed' | 'gon
   await targetProvider.deleteBlob(target, providerFileId).catch(async () => {
     await prisma.orphanBlob.create({ data: { connectedAccountId: target.id, providerFileId } }).catch(() => undefined)
   })
-  await prisma.uploadSession.updateMany({ where: { id: session.id, status: 'repairing' }, data: { status: 'failed', errorMessage: outcome === 'gone' ? 'File deleted during repair.' : 'Could not record the new copy.' } })
+  const reason = outcome === 'gone' ? 'File deleted or already repaired.' : 'Could not record the new copy.'
+  await prisma.uploadSession.updateMany({ where: { id: session.id, status: 'repairing' }, data: { status: 'failed', errorMessage: reason } })
   return outcome === 'gone' ? 'gone' : 'failed'
 }
 
 async function noteSourceFailure(replicaId: string, accountId: string, err: unknown) {
-  if (!(err instanceof ProviderUnavailableError)) return
+  if (!(err instanceof ProviderUnavailableError)) return // quota and other errors blame nobody
   if (err.notFound) await prisma.fileReplica.updateMany({ where: { id: replicaId }, data: { status: 'lost' } })
   else await markAccountUnhealthy(accountId, 'Storage provider refused access.').catch(() => undefined)
 }
@@ -191,8 +216,13 @@ function launch(jobId: string) {
 }
 
 export async function startRepair(): Promise<RepairJob> {
-  if (await prisma.repairJob.findFirst({ where: { status: 'running' } })) throw new RepairError(409, 'REPAIR_RUNNING', 'A repair is already running.')
-  const job = await prisma.repairJob.create({ data: { status: 'running' } })
+  await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
+  // The same row lock that serialises reservations makes check-and-create atomic.
+  const job = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM app_settings WHERE id = 1 FOR UPDATE`
+    if (await tx.repairJob.findFirst({ where: { status: 'running' } })) throw new RepairError(409, 'REPAIR_RUNNING', 'A repair is already running.')
+    return tx.repairJob.create({ data: { status: 'running' } })
+  })
   launch(job.id)
   return job
 }

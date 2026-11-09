@@ -20,7 +20,8 @@ export function classifyGoogleError(status: number, body: string): Error {
     }
     if (reasons.some((r) => QUOTA_REASONS.has(r))) return new ProviderQuotaError(message)
     if (reasons.includes('rateLimitExceeded')) return new Error(message)
-    return new ProviderUnavailableError(message, false)
+    // A non-quota 403 can be specific to one file, so it is not an account-level failure.
+    return new Error(message)
   }
   if (status === 401) return new ProviderUnavailableError(message, false)
   if (status === 404) return new ProviderUnavailableError(message, true)
@@ -31,6 +32,10 @@ export function classifyGoogleError(status: number, body: string): Error {
 export function classifyGoogleClientError(error: unknown): Error {
   if (error instanceof ProviderQuotaError || error instanceof ProviderUnavailableError) return error
   const e = error as { code?: unknown; message?: string; response?: { status?: number; data?: unknown } } | null
+  const dataText = typeof e?.response?.data === 'string' ? e.response.data : JSON.stringify(e?.response?.data ?? '')
+  if (/invalid_grant|invalid_client/i.test(String(e?.message ?? '') + String(e?.code ?? '') + dataText)) {
+    return new ProviderUnavailableError('Google authorization failed.', false)
+  }
   const status = e?.response?.status ?? (typeof e?.code === 'number' ? e.code : Number(e?.code))
   if (Number.isInteger(status) && (status as number) >= 100) {
     const data = e?.response?.data
@@ -42,6 +47,13 @@ export function classifyGoogleClientError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Google request failed.')
 }
 
+/** Only a real refusal marks the account; a network failure during token refresh stays a plain error. */
+export function classifyTokenError(error: unknown): Error {
+  const classified = classifyGoogleClientError(error)
+  if (classified instanceof ProviderUnavailableError || classified instanceof ProviderQuotaError) return classified
+  return new Error('Google token request failed.')
+}
+
 export const googleDeps = { getToken: accessToken, ensureFolder: ensureGoogleAppFolder }
 
 async function accessToken(account: ConnectedAccount) {
@@ -50,8 +62,8 @@ async function accessToken(account: ConnectedAccount) {
     const { token } = await client.getAccessToken()
     if (!token) throw new Error('empty token')
     return token
-  } catch {
-    throw new ProviderUnavailableError('Google authorization failed.', false)
+  } catch (error) {
+    throw classifyTokenError(error)
   }
 }
 

@@ -6,7 +6,7 @@ import test, { after, before, beforeEach } from 'node:test'
 import { app } from '../../src/app.js'
 import { prisma } from '../../src/config/prisma.js'
 import { UPLOAD_CHUNK_PLAINTEXT } from '../../src/modules/crypto/frames.js'
-import { repairIdle, resumeRepairOnBoot } from '../../src/modules/admin/repair.js'
+import { repairIdle, resumeRepairOnBoot, startRepair } from '../../src/modules/admin/repair.js'
 import { getBlob, memoryProvider, resetMemoryProvider } from '../../src/modules/storage/memory-provider.js'
 import { ProviderUnavailableError, setTestProvider, type StorageProvider } from '../../src/modules/storage/provider.js'
 import { hashPassword } from '../../src/utils/password.js'
@@ -22,10 +22,19 @@ let accountIds: string[] = []
 let admin = { id: '', token: '' }
 let alice = { id: '', token: '' }
 const authFail = new Set<string>()
+let gate: Promise<void> | null = null
+let onPut: (() => Promise<void>) | null = null
 
 const provider: StorageProvider = {
   ...memoryProvider,
-  readRange: (a, id, s, e) => {
+  putChunk: async (a, st, o, c, t) => {
+    const hook = onPut
+    onPut = null
+    if (hook) await hook()
+    return memoryProvider.putChunk(a, st, o, c, t)
+  },
+  readRange: async (a, id, s, e) => {
+    if (gate) await gate
     if (authFail.has(a.id)) return Promise.reject(new ProviderUnavailableError('auth failed', false))
     return memoryProvider.readRange(a, id, s, e)
   },
@@ -94,6 +103,8 @@ beforeEach(async () => {
   await prisma.connectedAccount.deleteMany({ where: { id: { in: accountIds } } })
   accountIds = []
   authFail.clear()
+  gate = null
+  onPut = null
   resetMemoryProvider()
   await prisma.repairJob.deleteMany()
   await prisma.appSetting.update({ where: { id: 1 }, data: { routingMode: 'most_available', priorityAccountIds: [], roundRobinCursor: 0 } })
@@ -240,4 +251,64 @@ test('a locked account fails over on read, is marked unhealthy, and Repair rebui
   const orphans = await prisma.orphanBlob.findMany({ where: { connectedAccountId: first.connectedAccountId } })
   assert.equal(orphans.length, 1)
   assert.equal(orphans[0]!.providerFileId, first.providerFileId)
+})
+
+test('a source that refuses during Repair is blamed, not the healthy target', async () => {
+  await seedAccount('a')
+  await seedAccount('b')
+  const fileId = await upload()
+  const c = await seedAccount('c')
+  const d = await seedAccount('d')
+  const reps = await replicasOf(fileId)
+  const lost = reps[0]!
+  const source = reps[1]!
+  await prisma.fileReplica.update({ where: { id: lost.id }, data: { status: 'lost' } })
+  authFail.add(source.connectedAccountId)
+  const job = await repairAndWait()
+  assert.equal(job.failed, 1)
+  assert.equal((await prisma.connectedAccount.findUniqueOrThrow({ where: { id: source.connectedAccountId } })).status, 'unhealthy')
+  for (const t of [c, d]) {
+    const row = await prisma.connectedAccount.findUniqueOrThrow({ where: { id: t.id } })
+    assert.equal(row.status, 'connected')
+    assert.equal(row.pausedUntil, null)
+  }
+  assert.equal(await prisma.uploadSession.count({ where: { fileId, status: 'repairing' } }), 0)
+})
+
+test('an account reconnected during the copy keeps its replica and the new blob is discarded', async () => {
+  await seedAccount('a')
+  await seedAccount('b')
+  const fileId = await upload()
+  const c = await seedAccount('c')
+  const reps = await replicasOf(fileId)
+  const flaky = reps[0]!
+  await prisma.connectedAccount.update({ where: { id: flaky.connectedAccountId }, data: { status: 'unhealthy' } })
+  onPut = async () => {
+    await prisma.connectedAccount.update({ where: { id: flaky.connectedAccountId }, data: { status: 'connected' } })
+  }
+  const job = await repairAndWait()
+  assert.equal(job.failed, 0)
+  const after = await replicasOf(fileId)
+  assert.deepEqual(after.map((r) => r.id).sort(), reps.map((r) => r.id).sort())
+  assert.equal(await prisma.orphanBlob.count({ where: { connectedAccountId: flaky.connectedAccountId } }), 0)
+  assert.equal(await prisma.fileReplica.count({ where: { connectedAccountId: c.id } }), 0)
+  assert.equal(await prisma.uploadSession.count({ where: { fileId, status: 'repairing' } }), 0)
+})
+
+test('two concurrent starts give exactly one job', async () => {
+  await seedAccount('a')
+  await seedAccount('b')
+  const fileId = await upload()
+  await seedAccount('c')
+  const [r] = await replicasOf(fileId)
+  await prisma.fileReplica.update({ where: { id: r!.id }, data: { status: 'lost' } })
+  let release!: () => void
+  gate = new Promise<void>((res) => { release = res })
+  const results = await Promise.allSettled([startRepair(), startRepair()])
+  release()
+  await repairIdle()
+  assert.equal(results.filter((x) => x.status === 'fulfilled').length, 1)
+  const rejected = results.find((x): x is PromiseRejectedResult => x.status === 'rejected')!
+  assert.equal(rejected.reason.code, 'REPAIR_RUNNING')
+  assert.equal(await prisma.repairJob.count(), 1)
 })
