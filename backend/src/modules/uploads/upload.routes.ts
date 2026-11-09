@@ -174,6 +174,10 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
     })
 
     busboy.on('file', (name, fileStream, info) => {
+      // Busboy destroys the current file stream with an error on disconnect, possibly while this file
+      // is still queued or starting. Unheard, that error would crash the process. The upload notices
+      // the destroyed stream when it next touches it.
+      fileStream.on('error', (error) => logUpload('file stream failed', { message: error instanceof Error ? error.message : 'Unknown error' }))
       if (responded) {
         fileStream.resume()
         return

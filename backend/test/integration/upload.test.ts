@@ -720,6 +720,80 @@ test('a client that disconnects mid-file fails its session', async () => {
   assert.equal(new Set(calls.abort).size, 2)
 })
 
+function partialMultipart(boundary: string, head: string, declaredBytes: number) {
+  const req = request(`${base}/uploads`, { method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': String(head.length + declaredBytes) } })
+  req.on('error', () => undefined)
+  req.write(head)
+  return req
+}
+
+const waitFor = async (done: () => boolean | Promise<boolean>) => {
+  for (let i = 0; i < 200 && !(await done()); i++) await new Promise((r) => setTimeout(r, 25))
+  assert.ok(await done(), 'condition reached')
+}
+
+async function assertServerAlive() {
+  const res = await api('GET', '/files', owner.token)
+  assert.equal(res.status, 200)
+}
+
+test('a disconnect while beginUpload is blocked fails the session and leaves the server up', async () => {
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  overrides = {
+    beginUpload: async (a, n, s) => {
+      await gate
+      return memoryProvider.beginUpload(a, n, s)
+    },
+  }
+  const boundary = 'xBlockedx'
+  const name = `blocked-${randomUUID()}.bin`
+  const req = partialMultipart(boundary, `--${boundary}\r\nContent-Disposition: form-data; name="sizeBytes"\r\n\r\n${C * 3}\r\n--${boundary}\r\nContent-Disposition: form-data; name="fileName"\r\n\r\n${name}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="x"\r\nContent-Type: a/b\r\n\r\n`, C * 3 + 100)
+  req.write(Buffer.alloc(1000))
+  await waitFor(() => calls.begin.length === 2)
+  req.destroy()
+  await new Promise((r) => setTimeout(r, 200)) // lets the server see the disconnect while beginUpload is still blocked
+  await assertServerAlive()
+  release()
+  await waitFor(async () => (await prisma.uploadSession.count({ where: { fileName: name, status: 'failed' } })) === 1)
+  await waitFor(() => new Set(calls.abort).size === 2)
+  const reserved = await reservedByAccount()
+  for (const account of accounts) assert.equal(reserved.get(account.id) ?? 0n, 0n)
+  await assertServerAlive()
+})
+
+test('a disconnect while a file is queued behind another leaves the server up and starts nothing for it', async () => {
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  overrides = {
+    beginUpload: async (a, n, s) => {
+      await gate
+      return memoryProvider.beginUpload(a, n, s)
+    },
+  }
+  const boundary = 'xQueuedx'
+  const first = `first-${randomUUID()}.bin`
+  const second = `second-${randomUUID()}.bin`
+  const meta = JSON.stringify([
+    { fieldName: 'f1', fileName: first, mimeType: 'a/b', sizeBytes: '1000' },
+    { fieldName: 'f2', fileName: second, mimeType: 'a/b', sizeBytes: String(C * 3) },
+  ])
+  const firstBytes = 'x'.repeat(1000)
+  const req = partialMultipart(boundary, `--${boundary}\r\nContent-Disposition: form-data; name="filesMeta"\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Disposition: form-data; name="f1"; filename="x"\r\nContent-Type: a/b\r\n\r\n${firstBytes}\r\n--${boundary}\r\nContent-Disposition: form-data; name="f2"; filename="y"\r\nContent-Type: a/b\r\n\r\n`, C * 3 + 100)
+  req.write(Buffer.alloc(1000))
+  await waitFor(() => calls.begin.length === 2)
+  await new Promise((r) => setTimeout(r, 100)) // lets the parser reach the second file
+  req.destroy()
+  await new Promise((r) => setTimeout(r, 200))
+  await assertServerAlive()
+  release()
+  await waitFor(async () => (await prisma.uploadSession.count({ where: { fileName: first, status: 'completed' } })) === 1)
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(await prisma.uploadSession.count({ where: { fileName: second } }), 0)
+  assert.equal(calls.begin.length, 2)
+  await assertServerAlive()
+})
+
 test('status leaves the session alone when a provider cannot answer', async () => {
   const data = randomBytes(1000)
   const started = await init(data.length)
