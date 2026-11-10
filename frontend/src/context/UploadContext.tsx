@@ -140,6 +140,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
             startOffset = Number(statusData.offset)
             return 'resumed'
           } catch (err) {
+            if (err instanceof UploadFailure) throw err
             const transient = !(err instanceof ApiError) || err.status >= 500 || err.code === 'UPLOAD_CHUNK_RETRY'
             if (!transient) throw err
             if (retries >= MAX_CHUNK_RETRIES) throw new UploadFailure('The upload kept failing after several attempts. Check your connection and use Retry.', errorCode(err))
