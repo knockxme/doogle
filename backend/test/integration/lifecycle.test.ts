@@ -303,6 +303,18 @@ test('removing an account is refused while a file keeps its only healthy copy th
   assert.equal((await api('DELETE', `/connected-accounts/${a!.connectedAccountId}`, alice.token)).status, 403)
 })
 
+test('removing an account is refused when the other copy sits on an unhealthy account', async () => {
+  const id = await upload(alice.token)
+  const [a, b] = await replicasOf(id)
+  // The replica row on B still says healthy, but B itself is unhealthy, so A holds the only usable copy.
+  await prisma.connectedAccount.update({ where: { id: b!.connectedAccountId }, data: { status: 'unhealthy' } })
+  const res = await api('DELETE', `/connected-accounts/${a!.connectedAccountId}`, admin.token)
+  assert.equal(res.status, 409, res.text)
+  assert.equal(res.json.code, 'ACCOUNT_HOLDS_SOLE_COPY')
+  assert.equal(await prisma.connectedAccount.count({ where: { id: a!.connectedAccountId } }), 1)
+  assert.equal(await prisma.fileReplica.count({ where: { fileId: id } }), 2)
+})
+
 test('removing an account drops its replicas, fails its uploading sessions and leaves File rows and blobs', async () => {
   const id = await upload(alice.token)
   const pending = await api('POST', '/uploads/resumable/init', alice.token, { fileName: 'pending.jpg', mimeType: 'image/jpeg', sizeBytes: '5000' })

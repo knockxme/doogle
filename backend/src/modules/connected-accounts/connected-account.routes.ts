@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { google } from 'googleapis'
+import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
@@ -245,30 +246,49 @@ connectedAccountRouter.post('/:id/sync-quota', requireAuth, requireAdmin, async 
   }
 })
 
+/**
+ * Files that have a copy on this account and no usable copy (healthy, on a connected account) anywhere else.
+ * Matches Repair's notion of a usable copy, so removing the account never takes the last one.
+ */
+function countSoleCopies(db: Prisma.TransactionClient | typeof prisma, accountId: string): Promise<number> {
+  return db.file.count({
+    where: {
+      status: { not: 'purged' },
+      replicas: {
+        some: { connectedAccountId: accountId },
+        none: { connectedAccountId: { not: accountId }, status: 'healthy', connectedAccount: { status: 'connected' } },
+      },
+    },
+  })
+}
+
 connectedAccountRouter.delete('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
     const account = await prisma.connectedAccount.findUnique({ where: { id: accountId }, select: { id: true } })
     if (!account) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', message: 'Account not found.' })
-    // Files whose only healthy copy lives on this account would become unreadable.
-    const soleCopies = await prisma.file.count({
-      where: {
-        status: { not: 'purged' },
-        replicas: { some: { connectedAccountId: accountId, status: 'healthy' }, none: { connectedAccountId: { not: accountId }, status: 'healthy' } },
-      },
-    })
-    if (!canRemoveAccount(soleCopies)) {
-      return res.status(409).json({ code: 'ACCOUNT_HOLDS_SOLE_COPY', message: `${soleCopies} file(s) have their only healthy copy on this account. Repair them onto another account first.`, files: soleCopies })
-    }
+    await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
+    const refuse = (count: number) => res.status(409).json({ code: 'ACCOUNT_HOLDS_SOLE_COPY', message: `${count} file(s) have no usable copy on another account. Repair them onto another account first.`, files: count })
+    // Fast refusal before any upload is touched; the authoritative check runs again under the lock below.
+    const early = await countSoleCopies(prisma, accountId)
+    if (!canRemoveAccount(early)) return refuse(early)
     // Uploads writing to this account can no longer finish.
     const sessions = await prisma.uploadSession.findMany({ where: { status: 'uploading', replicas: { some: { connectedAccountId: accountId } } }, select: { id: true } })
     for (const session of sessions) await failUpload(session.id, 'Storage account was removed.').catch(() => undefined)
-    // Only replica rows go; File rows and the blobs in the provider account are left alone.
-    await prisma.$transaction([
-      prisma.fileReplica.deleteMany({ where: { connectedAccountId: accountId } }),
-      prisma.uploadSessionReplica.deleteMany({ where: { connectedAccountId: accountId } }),
-      prisma.connectedAccount.delete({ where: { id: accountId } }),
-    ])
+    // Check and deletes run in one transaction under the app_settings lock, which every reservation also takes.
+    const soleCopies = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM app_settings WHERE id = 1 FOR UPDATE`
+      const count = await countSoleCopies(tx, accountId)
+      if (!canRemoveAccount(count)) return count
+      // A session reserved on this account after the scan above cannot finish either.
+      await tx.uploadSession.updateMany({ where: { status: 'uploading', replicas: { some: { connectedAccountId: accountId } } }, data: { status: 'failed', errorMessage: 'Storage account was removed.' } })
+      // Only replica rows go; File rows and the blobs in the provider account are left alone.
+      await tx.fileReplica.deleteMany({ where: { connectedAccountId: accountId } })
+      await tx.uploadSessionReplica.deleteMany({ where: { connectedAccountId: accountId } })
+      await tx.connectedAccount.delete({ where: { id: accountId } })
+      return 0
+    }, { timeout: 15_000, maxWait: 15_000 })
+    if (!canRemoveAccount(soleCopies)) return refuse(soleCopies)
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)
