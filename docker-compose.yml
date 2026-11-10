@@ -28,6 +28,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-this-jwt-secret-at-least-32-chars}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-change-this-encryption-key-32bytes!}
+      FILE_MASTER_KEY: ${FILE_MASTER_KEY:?FILE_MASTER_KEY must be set}
       ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
       MAX_UPLOAD_BYTES: 5368709120
@@ -37,12 +38,25 @@ services:
     ports:
       - "127.0.0.1:4000:4000"
 
+  backup:
+    image: mysql:8.4
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-9drive}
+    volumes:
+      - backups:/backups
+      - ./scripts/mysql-backup.sh:/usr/local/bin/mysql-backup.sh:ro
+    entrypoint: ["bash", "/usr/local/bin/mysql-backup.sh"]
+
   frontend:
     build:
       context: ./frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
-        VITE_RECAPTCHA_SITE_KEY: ${VITE_RECAPTCHA_SITE_KEY:-}
     restart: unless-stopped
     depends_on:
       - backend
@@ -51,3 +65,4 @@ services:
 
 volumes:
   mysql_data:
+  backups:
