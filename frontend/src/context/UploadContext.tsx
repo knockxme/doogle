@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { API_URL, ApiError, apiFetch, errorCode, errorMessage } from '@/lib/api'
-import { getAccessToken } from '@/lib/auth'
+import { API_URL, ApiError, apiFetch, errorCode, errorMessage, isTokenFailure, refreshAccessToken } from '@/lib/api'
+import { clearAuthSession, getAccessToken } from '@/lib/auth'
 
 export type UploadProgressStatus = 'uploading' | 'done' | 'error' | 'partial'
 export type UploadProgressFile = { name: string; size: number; percent: number; status: UploadProgressStatus; message?: string }
@@ -63,8 +63,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   async function sendChunk(sessionId: string, file: File, startOffset: number, chunkSize: number) {
     const endOffset = Math.min(startOffset + chunkSize, file.size)
     const chunk = file.slice(startOffset, endOffset)
-    // Raw fetch with the bearer token for the binary body.
-    const response = await fetch(`${API_URL}/uploads/resumable/chunk/${sessionId}`, {
+    const put = () => fetch(`${API_URL}/uploads/resumable/chunk/${sessionId}`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${getAccessToken()}`,
@@ -72,8 +71,21 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       },
       body: chunk
     })
+    // Raw fetch with the bearer token for the binary body. A long upload outlives the access token: refresh once and resend the same chunk.
+    let response = await put()
+    let body: { code?: string; message?: string } = {}
+    if (!response.ok) {
+      body = await response.json().catch(() => ({})) as typeof body
+      if (response.status === 401 && isTokenFailure(body.code)) {
+        if (await refreshAccessToken()) {
+          response = await put()
+          body = response.ok ? {} : await response.json().catch(() => ({})) as typeof body
+        } else {
+          clearAuthSession()
+        }
+      }
+    }
     if (response.ok) return await response.json() as { status: string; offset?: string }
-    const body = await response.json().catch(() => ({})) as { code?: string; message?: string }
     throw new ApiError(response.status, body.message ?? 'Chunk upload failed', body.code, body)
   }
 
@@ -116,6 +128,24 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       }
 
       let retries = 0
+      // Asks the server where it got to. A failed lookup uses the same retry budget as a failed chunk.
+      const resync = async (): Promise<'completed' | 'resumed'> => {
+        for (;;) {
+          retries += 1
+          await wait(Math.min(500 * 2 ** retries, 8000))
+          try {
+            const statusData = await apiFetch<{ status: string; offset: string }>(`/uploads/resumable/status/${sessionId}`)
+            if (statusData.status === 'completed') return 'completed'
+            if (statusData.status !== 'uploading') throw new UploadFailure(uploadMessages.UPLOAD_NOT_ACTIVE, 'UPLOAD_NOT_ACTIVE')
+            startOffset = Number(statusData.offset)
+            return 'resumed'
+          } catch (err) {
+            const transient = !(err instanceof ApiError) || err.status >= 500 || err.code === 'UPLOAD_CHUNK_RETRY'
+            if (!transient) throw err
+            if (retries >= MAX_CHUNK_RETRIES) throw new UploadFailure('The upload kept failing after several attempts. Check your connection and use Retry.', errorCode(err))
+          }
+        }
+      }
       while (startOffset < file.size) {
         try {
           const resData = await sendChunk(sessionId, file, startOffset, chunkSize)
@@ -130,19 +160,12 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           const code = errorCode(err)
           // A dropped connection or a server asking for a retry: ask where the server got to and carry on from there.
           const transient = code === 'UPLOAD_CHUNK_RETRY' || !(err instanceof ApiError)
-          if (!transient || retries >= MAX_CHUNK_RETRIES) {
-            if (transient) throw new UploadFailure('The upload kept failing after several attempts. Check your connection and use Retry.', code)
-            throw err
-          }
-          retries += 1
-          await wait(Math.min(500 * 2 ** retries, 8000))
-          const statusData = await apiFetch<{ status: string; offset: string }>(`/uploads/resumable/status/${sessionId}`)
-          if (statusData.status === 'completed') {
+          if (!transient) throw err
+          if (retries >= MAX_CHUNK_RETRIES) throw new UploadFailure('The upload kept failing after several attempts. Check your connection and use Retry.', code)
+          if (await resync() === 'completed') {
             onProgress(100)
             return
           }
-          if (statusData.status !== 'uploading') throw new UploadFailure(uploadMessages.UPLOAD_NOT_ACTIVE, 'UPLOAD_NOT_ACTIVE')
-          startOffset = Number(statusData.offset)
         }
       }
     } catch (err) {
