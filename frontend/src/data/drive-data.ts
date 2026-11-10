@@ -5,7 +5,6 @@ export type FolderItem = {
   color: string
   iconUrl?: string | null
   parentId?: string | null
-  providerFolderId?: string | null
 }
 
 export type FileItem = {
@@ -16,8 +15,6 @@ export type FileItem = {
   size: string
   sizeBytes?: string
   access: string
-  accountEmail?: string
-  accountProvider?: string
   createdAt?: string
   kind: 'doc' | 'image' | 'video' | 'pdf'
   shared: number

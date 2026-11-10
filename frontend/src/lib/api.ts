@@ -7,6 +7,27 @@ export const API_URL = (rawApiUrl && rawApiUrl !== 'http://localhost:4000')
   : (isProd ? '/api' : 'http://localhost:4000')
 
 
+export class ApiError extends Error {
+  status: number
+  code?: string
+  data: Record<string, unknown>
+  constructor(status: number, message: string, code?: string, data: Record<string, unknown> = {}) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.data = data
+  }
+}
+
+export function errorCode(error: unknown) {
+  return error instanceof ApiError ? error.code : undefined
+}
+
+export function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
 type ApiOptions = RequestInit & { skipAuth?: boolean; retry?: boolean }
 
 async function refreshAccessToken() {
@@ -35,9 +56,9 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }))
+    const error = await response.json().catch(() => ({ message: response.statusText })) as Record<string, unknown>
     if (response.status === 401) clearAuthSession()
-    throw new Error(error.message ?? 'Request failed')
+    throw new ApiError(response.status, typeof error.message === 'string' ? error.message : 'Request failed', typeof error.code === 'string' ? error.code : undefined, error)
   }
 
   return response.json() as Promise<T>

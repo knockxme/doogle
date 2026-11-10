@@ -1,4 +1,4 @@
-import { CalendarClock, Database, Folder, HardDrive, Mail, Tag, X } from 'lucide-react'
+import { CalendarClock, Database, Folder, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDate } from '@/lib/api'
 import type { FileItem } from '@/data/drive-data'
@@ -32,8 +32,6 @@ export function FileDetailsDrawer({ open, file, onClose }: { open: boolean; file
             <DetailRow icon={Tag} label="Name" value={file.name} />
             <DetailRow icon={Database} label="Size" value={file.sizeBytes ? formatBytes(file.sizeBytes) : file.size} />
             <DetailRow icon={CalendarClock} label="Uploaded At" value={file.createdAt ? formatDate(file.createdAt) : file.date} />
-            <DetailRow icon={Mail} label="Google Account" value={file.accountEmail ?? file.access} />
-            <DetailRow icon={HardDrive} label="Provider" value={file.accountProvider ?? 'google_drive'} />
             <DetailRow icon={Folder} label="Virtual Folder" value={file.folderName ?? 'No folder'} />
             <DetailRow icon={Tag} label="MIME Type" value={file.mimeType ?? 'Unknown'} />
           </div>

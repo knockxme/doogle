@@ -4,7 +4,8 @@ import {
   Bell,
   Braces,
   FileArchive,
-  Gauge,
+  Users,
+  Database,
   History,
   LogOut,
   Menu,
@@ -19,7 +20,6 @@ import {
   Trash2,
   X,
   ShieldCheck,
-  HardDrive,
   Info,
   CheckCircle,
   ChevronDown,
@@ -30,13 +30,12 @@ import { BrandLogo } from '@/components/drive/BrandLogo'
 import { Input } from '@/components/ui/input'
 import { apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
-import { clearAuthSession, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
+import { clearAuthSession, getStoredUser, isAdmin, updateStoredUser, type AuthUser } from '@/lib/auth'
 import { getGravatarUrl } from '@/lib/gravatar'
 import { cn } from '@/lib/utils'
 
 const menu = [
   { label: 'All Files', icon: FileArchive, href: '/all-files' },
-  { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
   { label: 'Shared With Me', icon: Share2, href: '/shared' },
   { label: 'Starred', icon: Star, href: '/starred', disabled: true },
   { label: 'Recycle Bin', icon: Trash2, href: '/trash' },
@@ -45,61 +44,39 @@ const menu = [
   { label: 'API Keys', icon: Braces, href: '/api' },
 ]
 
+const adminMenu = [
+  { label: 'Users', icon: Users, href: '/admin/users' },
+  { label: 'Storage', icon: Database, href: '/admin/storage' },
+]
+
 type StorageSummary = {
-  totalBytes: string
   usedBytes: string
-  availableBytes: string
+  limitBytes: string | null
+  availableBytes: string | null
+  poolUsableBytes?: string | null
 }
 
-type StorageBreakdown = {
-  photo: string
-  video: string
-  document: string
-}
-
-function SystemInfoDropdown({ storage }: { storage: any }) {
-  const activeGoogle = storage?.accounts?.filter((a: any) => a.provider === 'google_drive' && a.status === 'connected') ?? []
-
+function SystemInfoDropdown() {
   return (
     <div className="absolute right-0 top-12 z-50 w-[min(calc(100vw-2rem),22rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/15">
       <div className="border-b border-slate-200 px-4 py-3 bg-slate-50/50">
-        <p className="text-sm font-extrabold text-slate-950">Workspace Status & Info</p>
-        <p className="text-xs text-slate-500">Overview of your connections & guidelines</p>
+        <p className="text-sm font-extrabold text-slate-950">About this drive</p>
+        <p className="text-xs text-slate-500">A private drive for your family</p>
       </div>
       <div className="max-h-96 overflow-y-auto p-4 space-y-4">
-        {/* Connection status */}
         <div>
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> Connection Status</h4>
-          <div className="mt-2 space-y-2">
-            <div className="flex items-center justify-between text-xs rounded-xl bg-slate-50 p-2.5 border border-slate-100">
-              <span className="font-semibold text-slate-700">Google Drive accounts</span>
-              <span className={activeGoogle.length > 0 ? "text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full font-bold border border-emerald-100" : "text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full font-bold border border-amber-100"}>
-                {activeGoogle.length} Connected
-              </span>
-            </div>
-            {activeGoogle.map((acc: any) => (
-              <p key={acc.id} className="text-[11px] text-slate-500 truncate px-2.5">— {acc.email}</p>
-            ))}
-          </div>
-        </div>
-
-        {/* Database & engine status */}
-        <div>
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><HardDrive className="h-3.5 w-3.5 text-blue-500" /> Storage Engine</h4>
-          <div className="mt-2 text-xs text-slate-600 space-y-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-            <p>• <b>DB Type:</b> SQLite (Local Database)</p>
-            <p>• <b>Upload Folder:</b> Google Drive dedicated <code>9drive</code></p>
-            <p>• <b>Max Upload Size:</b> 5 GB per stream</p>
-          </div>
-        </div>
-
-        {/* Tips & Guides */}
-        <div>
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><Info className="h-3.5 w-3.5 text-indigo-500" /> Usage Tips</h4>
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> Privacy</h4>
           <ul className="mt-2 text-[11px] text-slate-500 list-disc list-inside space-y-1 pl-1">
-            <li>Virtual folders exist only in your SQLite database.</li>
-            <li>Physical files are always uploaded straight to Google Drive.</li>
-            <li>Use the Sync button to fetch changes made directly on Drive.</li>
+            <li>Files are encrypted before they leave the server.</li>
+            <li>Every file is kept in two copies on different storage accounts.</li>
+          </ul>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><Info className="h-3.5 w-3.5 text-indigo-500" /> Tips</h4>
+          <ul className="mt-2 text-[11px] text-slate-500 list-disc list-inside space-y-1 pl-1">
+            <li>Folders are virtual and only organize your files.</li>
+            <li>Empty files cannot be uploaded.</li>
+            <li>Ask the admin if you run out of space.</li>
           </ul>
         </div>
       </div>
@@ -107,18 +84,14 @@ function SystemInfoDropdown({ storage }: { storage: any }) {
   )
 }
 
-function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigate?: () => void; user: AuthUser | null; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void }) {
+function Sidebar({ onNavigate, user, storage, onLogout }: { onNavigate?: () => void; user: AuthUser | null; storage: StorageSummary | null; onLogout: () => void }) {
   const used = Number(storage?.usedBytes ?? 0)
-  const total = Number(storage?.totalBytes ?? 0)
-  const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
+  const limit = Number(storage?.limitBytes ?? 0)
+  const progress = storage?.limitBytes && limit > 0 ? Math.min(100, (used / limit) * 100) : 0
+  const left = storage?.availableBytes === null || storage?.availableBytes === undefined ? '--' : formatBytes(storage.availableBytes)
   const [profileImageUrl, setProfileImageUrl] = useState('')
   const [avatarError, setAvatarError] = useState(false)
-  const items = [
-    ['Photo', formatBytes(breakdown.photo), 'bg-lime-500'],
-    ['Video', formatBytes(breakdown.video), 'bg-yellow-400'],
-    ['Document', formatBytes(breakdown.document), 'bg-cyan-400'],
-    ['Free Storage', formatBytes(storage?.availableBytes), 'bg-orange-500'],
-  ]
+  const admin = isAdmin(user)
 
   useEffect(() => {
     setAvatarError(false)
@@ -164,23 +137,30 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
             {item.label}
           </NavLink>
         ))}
+        {admin ? (
+          <>
+            <p className="mt-3 px-3.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">Admin</p>
+            {adminMenu.map((item) => (
+              <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-10 items-center gap-2.5 rounded-xl px-3.5 text-[13px] font-bold transition-all border border-transparent', isActive ? 'bg-blue-600/10 text-blue-600 border-blue-600/10 shadow-sm' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </NavLink>
+            ))}
+          </>
+        ) : null}
       </nav>
 
       <div className="mt-auto border-t border-slate-200/60 pt-4 text-[13px]">
-        <div className="mb-3 space-y-1.5">
-          {items.map(([label, value, color]) => (
-            <div key={label} className="flex items-center justify-between text-slate-500 font-medium">
-              <span className="flex items-center gap-1.5"><span className={cn('h-1.5 w-1.5 rounded-full', color)} />{label}</span>
-              <span className="font-semibold text-slate-700">{value}</span>
-            </div>
-          ))}
-        </div>
         <div className="flex justify-between text-sm font-bold text-slate-700">
           <span>{formatBytes(storage?.usedBytes)} used</span>
-          <span className="text-slate-400">{formatBytes(storage?.totalBytes)}</span>
+          <span className="text-slate-400">{storage?.limitBytes ? `of ${formatBytes(storage.limitBytes)}` : 'No limit'}</span>
         </div>
         <div className="my-2 h-1.5 rounded-full bg-slate-200/60 overflow-hidden">
           <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="flex items-center justify-between text-slate-500 font-medium">
+          <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-orange-500" />Storage left</span>
+          <span className="font-semibold text-slate-700">{left}</span>
         </div>
         <Button variant="danger" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
@@ -188,12 +168,6 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
       </div>
     </aside>
   )
-}
-
-type ConnectedAccount = {
-  id: string
-  email: string
-  provider: string
 }
 
 export type DriveLayoutContext = {
@@ -212,7 +186,6 @@ export function DriveLayout() {
   const [searchValue, setSearchValue] = useState(searchParams.get('q') ?? '')
   const [user, setUser] = useState<AuthUser | null>(getStoredUser())
   const [storage, setStorage] = useState<StorageSummary | null>(null)
-  const [breakdown, setBreakdown] = useState<StorageBreakdown>({ photo: '0', video: '0', document: '0' })
   const [infoOpen, setInfoOpen] = useState(false)
   const [headerActions, setHeaderActions] = useState<ReactNode>(null)
   const { uploadProgress, setUploadProgress, retryFailedUpload } = useUpload()
@@ -224,10 +197,8 @@ export function DriveLayout() {
   })
 
   // Advanced search states
-  const [accounts, setAccounts] = useState<ConnectedAccount[]>([])
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [filterKind, setFilterKind] = useState(searchParams.get('kind') ?? '')
-  const [filterAccountId, setFilterAccountId] = useState(searchParams.get('accountId') ?? '')
   const [filterMinSize, setFilterMinSize] = useState(() => {
     const min = searchParams.get('minSize')
     return min ? String(Math.round(Number(min) / (1024 * 1024))) : ''
@@ -262,25 +233,12 @@ export function DriveLayout() {
   }
 
   async function loadSidebarStats() {
-    await Promise.all([
-      apiFetch<StorageSummary>('/storage/summary').then(setStorage),
-      apiFetch<StorageBreakdown>('/storage/breakdown').then(setBreakdown),
-    ])
-  }
-
-  async function loadConnectedAccounts() {
-    try {
-      const data = await apiFetch<{ accounts: ConnectedAccount[] }>('/connected-accounts')
-      setAccounts(data.accounts)
-    } catch (e) {
-      console.error('Failed to load accounts for filter dropdown', e)
-    }
+    setStorage(await apiFetch<StorageSummary>('/storage/summary'))
   }
 
   useEffect(() => {
     setSearchValue(searchParams.get('q') ?? '')
     setFilterKind(searchParams.get('kind') ?? '')
-    setFilterAccountId(searchParams.get('accountId') ?? '')
     setFilterMinSize(() => {
       const min = searchParams.get('minSize')
       return min ? String(Math.round(Number(min) / (1024 * 1024))) : ''
@@ -314,7 +272,6 @@ export function DriveLayout() {
     if (q) nextParams.set('q', q)
 
     if (filterKind) nextParams.set('kind', filterKind)
-    if (filterAccountId) nextParams.set('accountId', filterAccountId)
 
     if (filterMinSize) {
       const bytes = Number(filterMinSize) * 1024 * 1024
@@ -338,7 +295,6 @@ export function DriveLayout() {
 
   function clearFilters() {
     setFilterKind('')
-    setFilterAccountId('')
     setFilterMinSize('')
     setFilterMaxSize('')
     setFilterStartDate('')
@@ -369,7 +325,6 @@ export function DriveLayout() {
       })
       .catch(() => undefined)
     loadSidebarStats().catch(() => undefined)
-    loadConnectedAccounts().catch(() => undefined)
     window.addEventListener('9drive:storage-changed', loadSidebarStats)
     return () => window.removeEventListener('9drive:storage-changed', loadSidebarStats)
   }, [])
@@ -386,7 +341,7 @@ export function DriveLayout() {
     <main className="min-h-screen w-full overflow-x-hidden bg-white">
       <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
         <div className="hidden lg:block lg:h-screen lg:shrink-0">
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} />
+          <Sidebar user={user} storage={storage} onLogout={logout} />
         </div>
         <div className={cn('fixed inset-0 z-40 bg-slate-950/40 transition-opacity lg:hidden', sidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0')} onClick={() => setSidebarOpen(false)} />
         <div className={cn('fixed inset-y-0 left-0 z-50 transform bg-white shadow-2xl transition-transform duration-300 ease-out lg:hidden', sidebarOpen ? 'translate-x-0' : '-translate-x-full')}>
@@ -395,7 +350,7 @@ export function DriveLayout() {
               <X className="h-5 w-5" />
             </Button>
           </div>
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} onNavigate={() => setSidebarOpen(false)} />
+          <Sidebar user={user} storage={storage} onLogout={logout} onNavigate={() => setSidebarOpen(false)} />
         </div>
         <section className="min-w-0 flex-1 p-4 sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
           <header className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -418,7 +373,7 @@ export function DriveLayout() {
                     <Bell className="h-5 w-5" />
                     {!infoOpen ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-600" /> : null}
                   </Button>
-                  {infoOpen ? <SystemInfoDropdown storage={storage} /> : null}
+                  {infoOpen ? <SystemInfoDropdown /> : null}
                 </div>
               </div>
             </div>
@@ -447,17 +402,6 @@ export function DriveLayout() {
                         <option value="pdf">PDF</option>
                         <option value="doc">Document</option>
                         <option value="archive">Archive</option>
-                      </select>
-                    </div>
-
-                    {/* Connected Account */}
-                    <div>
-                      <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Connected Account</label>
-                      <select value={filterAccountId} onChange={(e) => setFilterAccountId(e.target.value)} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-blue-500 focus:bg-white focus:outline-none">
-                        <option value="">All Accounts</option>
-                        {accounts.map((acc) => (
-                          <option key={acc.id} value={acc.id}>{acc.email} ({acc.provider})</option>
-                        ))}
                       </select>
                     </div>
 
@@ -503,7 +447,7 @@ export function DriveLayout() {
                 <Bell className="h-5 w-5" />
                 {!infoOpen ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-600" /> : null}
               </Button>
-              {infoOpen ? <SystemInfoDropdown storage={storage} /> : null}
+              {infoOpen ? <SystemInfoDropdown /> : null}
             </div>
           </header>
           <Outlet context={{ setHeaderActions } satisfies DriveLayoutContext} />
@@ -552,6 +496,7 @@ export function DriveLayout() {
                           </span>
                         </div>
                       </div>
+                      {file.status === 'error' && file.message ? <p className="text-xs text-red-600">{file.message}</p> : null}
                       <div className="h-1.5 rounded-full bg-slate-200">
                         <div className={file.status === 'error' ? 'h-full rounded-full bg-red-500' : file.status === 'done' ? 'h-full rounded-full bg-emerald-500' : 'h-full rounded-full bg-blue-600'} style={{ width: `${file.percent}%` }} />
                       </div>

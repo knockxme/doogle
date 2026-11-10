@@ -3,6 +3,8 @@ export type AuthUser = {
   name: string
   email: string
   status?: string
+  role?: 'admin' | 'member'
+  mustChangePassword?: boolean
 }
 
 const ACCESS_TOKEN_KEY = '9drive.accessToken'
@@ -40,4 +42,8 @@ export function clearAuthSession() {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
+}
+
+export function isAdmin(user: AuthUser | null = getStoredUser()) {
+  return user?.role === 'admin'
 }

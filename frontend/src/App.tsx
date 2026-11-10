@@ -4,11 +4,12 @@ import { DriveLayout } from '@/layouts/DriveLayout'
 import { AllFilesPage } from '@/pages/AllFilesPage'
 import { ArchivedPage } from '@/pages/ArchivedPage'
 import { LoginPage } from '@/pages/LoginPage'
-import { GoogleAuthPage } from '@/pages/GoogleAuthPage'
 import { GoogleConnectedPage } from '@/pages/GoogleConnectedPage'
-import { QuotaTrackerPage } from '@/pages/QuotaTrackerPage'
+import { AdminRoute } from '@/components/auth/AdminRoute'
+import { AdminStoragePage } from '@/pages/AdminStoragePage'
+import { AdminUsersPage } from '@/pages/AdminUsersPage'
+import { ChangePasswordPage } from '@/pages/ChangePasswordPage'
 import { RecentPage } from '@/pages/RecentPage'
-import { RegisterPage } from '@/pages/RegisterPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { SharedPage } from '@/pages/SharedPage'
 import { StarredPage } from '@/pages/StarredPage'
@@ -24,16 +25,14 @@ function App() {
     <UploadProvider>
       <Routes>
       <Route path="login" element={<LoginPage />} />
-      <Route path="register" element={<RegisterPage />} />
-      <Route path="google-auth" element={<GoogleAuthPage />} />
       <Route path="google-connected" element={<GoogleConnectedPage />} />
       <Route path="public/files/:token" element={<PublicFilePage />} />
       <Route path="public/files/:token/embed" element={<PublicFilePage embed />} />
       <Route element={<ProtectedRoute />}>
+        <Route path="change-password" element={<ChangePasswordPage />} />
         <Route element={<DriveLayout />}>
           <Route index element={<Navigate to="/all-files" replace />} />
           <Route path="all-files" element={<AllFilesPage />} />
-          <Route path="quota" element={<QuotaTrackerPage />} />
           <Route path="shared" element={<SharedPage />} />
           <Route path="recent" element={<RecentPage />} />
           <Route path="starred" element={<StarredPage />} />
@@ -42,6 +41,12 @@ function App() {
           <Route path="activity" element={<ActivityLogPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="api" element={<ApiManagementPage />} />
+          <Route element={<AdminRoute />}>
+            <Route path="admin" element={<Navigate to="/admin/users" replace />} />
+            <Route path="admin/users" element={<AdminUsersPage />} />
+            <Route path="admin/storage" element={<AdminStoragePage />} />
+            <Route path="quota" element={<Navigate to="/admin/storage" replace />} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/all-files" replace />} />

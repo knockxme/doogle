@@ -4,16 +4,16 @@ import { Download, ExternalLink, FileArchive, FileText, ImageIcon, Play, Table2 
 import { Button } from '@/components/ui/button'
 import { API_URL, apiFetch, formatBytes, formatDate } from '@/lib/api'
 import { createPlyr, ensurePlyr } from '@/lib/plyr'
-import { getPreviewKind, isSpreadsheetMimeType, officeViewerUrl } from '@/lib/preview'
+import { getPreviewKind, isSpreadsheetMimeType } from '@/lib/preview'
 
 type PublicFile = { name: string; mimeType: string; sizeBytes: string; createdAt: string }
 
 function fileIcon(file: PublicFile, kind: ReturnType<typeof getPreviewKind>) {
   if (kind === 'image') return <ImageIcon className="h-5 w-5" />
+  if (kind === 'audio') return <Play className="h-5 w-5" />
   if (kind === 'video') return <Play className="h-5 w-5" />
   if (isSpreadsheetMimeType(file.mimeType)) return <Table2 className="h-5 w-5" />
   if (kind === 'document') return <FileText className="h-5 w-5" />
-  if (kind === 'office') return <FileText className="h-5 w-5" />
   return <FileArchive className="h-5 w-5" />
 }
 
@@ -95,7 +95,7 @@ export function PublicFilePage({ embed = false }: { embed?: boolean }) {
       {kind === 'image' ? <img src={previewUrl} alt={file.name} className="max-h-full max-w-full object-contain shadow-2xl shadow-black/30" /> : null}
       {kind === 'video' ? <div className="shared-video-shell"><video ref={videoRef} controls playsInline preload="metadata"><source src={previewUrl} type={file.mimeType} /></video></div> : null}
       {kind === 'document' ? <iframe src={previewUrl} title={file.name} className="h-full w-full border-0 bg-white" /> : null}
-      {kind === 'office' ? <iframe src={officeViewerUrl(previewUrl)} title={file.name} className="h-full w-full border-0 bg-white" /> : null}
+      {kind === 'audio' ? <audio controls preload="metadata" src={previewUrl} className="w-full max-w-xl px-4" /> : null}
       {!kind ? <UnsupportedPreview file={file} downloadUrl={downloadUrl} /> : null}
     </div>
   )

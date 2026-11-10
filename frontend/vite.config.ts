@@ -12,7 +12,7 @@ export default defineConfig({
       manifest: {
         name: '9Drive',
         short_name: '9Drive',
-        description: 'Google Drive storage gateway for files, folders, sharing, and quota tracking.',
+        description: 'Private family drive with encrypted, mirrored storage.',
         theme_color: '#2563eb',
         background_color: '#ffffff',
         display: 'standalone',
@@ -26,7 +26,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallbackDenylist: [/^\/(auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads)(\/|$)/],
+        navigateFallbackDenylist: [/^\/(admin|auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads)(\/|$)/],
         globPatterns: ['**/*.{js,css,html,svg,ico,png,webp,woff2}'],
       },
     }),

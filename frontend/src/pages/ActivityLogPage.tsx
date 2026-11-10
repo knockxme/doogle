@@ -13,29 +13,34 @@ import {
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/drive/PageHeader'
+import { Button } from '@/components/ui/button'
 import { apiFetch, formatDate } from '@/lib/api'
+import { isAdmin } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 
 type AuditLog = {
   id: string
   action: string
   entityType: string
-  entityId: string | null
-  metadata: string | any | null
+  entityId?: string | null
+  metadata?: string | any | null
   createdAt: string
+  user?: { id: string; name: string; email: string }
 }
 
 export function ActivityLogPage() {
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showAll, setShowAll] = useState(false)
+  const admin = isAdmin()
 
   async function loadLogs() {
     setLoading(true)
     setError('')
     try {
-      const data = await apiFetch<{ logs: AuditLog[] }>('/audit-logs')
-      setLogs(data.logs)
+      const data = await apiFetch<{ logs: Omit<AuditLog, 'id'>[] }>(showAll ? '/audit-logs/all' : '/audit-logs')
+      setLogs(data.logs.map((log, index) => ({ ...log, id: (log as AuditLog).id ?? `${log.createdAt}-${index}` })))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load activity logs')
     } finally {
@@ -45,7 +50,7 @@ export function ActivityLogPage() {
 
   useEffect(() => {
     loadLogs().catch(() => undefined)
-  }, [])
+  }, [showAll])
 
   function getActionBadge(action: string) {
     const act = action.toUpperCase()
@@ -136,7 +141,8 @@ export function ActivityLogPage() {
     <>
       <PageHeader
         title="Activity Log"
-        description="View audit trails and file activities in your 9Drive workspace."
+        description={showAll ? 'Action types and who did them across the drive. File names are never shown here.' : 'View audit trails and file activities in your 9Drive workspace.'}
+        actions={admin ? <Button variant="outline" onClick={() => setShowAll(!showAll)}>{showAll ? 'Show my activity' : 'Show all users'}</Button> : undefined}
       />
 
       {error && (
@@ -186,6 +192,7 @@ export function ActivityLogPage() {
                           <EntityIcon className="h-3.5 w-3.5" />
                           <span>{log.entityType}</span>
                         </div>
+                        {log.user ? <span className="text-xs font-semibold text-slate-600">{log.user.name} ({log.user.email})</span> : null}
                       </div>
                       <div className="mt-2 flex flex-col gap-0.5">
                         {renderMetadata(log.metadata)}

@@ -118,11 +118,10 @@ Important files:
 - `frontend/src/layouts/DriveLayout.tsx`: protected app shell, sidebar, header search, storage sidebar stats.
 - `frontend/src/pages/AllFilesPage.tsx`: core file/folder UI, uploads, context menus, preview, share/invite modals.
 - `frontend/src/pages/SharedPage.tsx`: shared links and invites UI.
-- `frontend/src/pages/QuotaTrackerPage.tsx`: connected-account quota UI.
-- `frontend/src/pages/SettingsPage.tsx`: Google account/settings UI.
-- `frontend/src/pages/GoogleAuthPage.tsx`: Google auth handoff exchange page.
+- `frontend/src/pages/AdminUsersPage.tsx`, `AdminStoragePage.tsx`: admin-only users and storage pages (guarded by `AdminRoute`).
+- `frontend/src/pages/ChangePasswordPage.tsx`: forced and voluntary password change.
+- `frontend/src/pages/SettingsPage.tsx`: profile and password link.
 - `frontend/src/pages/PublicFilePage.tsx`: public shared file viewer/embed page.
-- `frontend/src/components/auth/GoogleLogo.tsx`: Google button logo.
 - `frontend/src/components/drive/**`: drive-specific UI components.
 - `frontend/src/components/ui/**`: reusable UI primitives.
 - `frontend/src/lib/api.ts`: API helper, token refresh retry, formatting utilities.

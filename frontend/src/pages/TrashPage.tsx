@@ -10,12 +10,7 @@ type TrashFile = {
   name: string
   mimeType: string
   sizeBytes: string
-  provider: string
   deletedAt: string
-  connectedAccount: {
-    email: string
-    provider: string
-  }
 }
 
 export function TrashPage() {
@@ -161,7 +156,6 @@ export function TrashPage() {
                     />
                   </th>
                   <th className="p-4">Name</th>
-                  <th className="p-4">Account</th>
                   <th className="p-4">Size</th>
                   <th className="p-4">Deleted At</th>
                   <th className="p-4 text-right">Actions</th>
@@ -185,9 +179,6 @@ export function TrashPage() {
                           {file.name}
                         </span>
                       </div>
-                    </td>
-                    <td className="p-4 text-sm text-slate-500">
-                      {file.connectedAccount.email} ({file.provider})
                     </td>
                     <td className="p-4 text-sm font-semibold">{formatBytes(file.sizeBytes)}</td>
                     <td className="p-4 text-sm text-slate-500">

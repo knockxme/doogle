@@ -1,21 +1,54 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { API_URL, apiFetch } from '@/lib/api'
+import { API_URL, ApiError, apiFetch, errorCode, errorMessage } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 
 export type UploadProgressStatus = 'uploading' | 'done' | 'error' | 'partial'
-export type UploadProgressFile = { name: string; size: number; percent: number; status: UploadProgressStatus }
+export type UploadProgressFile = { name: string; size: number; percent: number; status: UploadProgressStatus; message?: string }
 export type UploadProgressState = { open: boolean; fileName: string; percent: number; status: UploadProgressStatus; files: UploadProgressFile[] }
 
-type ResumableSession = { sessionId: string; file: File; folderId?: string | null; targetAccountId?: string | null }
+type ResumableSession = { sessionId: string; file: File; folderId?: string | null }
 
 type UploadContextType = {
   uploadProgress: UploadProgressState
   setUploadProgress: React.Dispatch<React.SetStateAction<UploadProgressState>>
-  uploadFiles: (files: File[], folderId: string | null, targetAccountId?: string | null) => Promise<void>
+  uploadFiles: (files: File[], folderId: string | null) => Promise<void>
   retryFailedUpload: (fileName: string) => Promise<void>
 }
 
 const UploadContext = createContext<UploadContextType | undefined>(undefined)
+
+// 8 encrypted frames of plaintext. The server sends its own value on init; this is the fallback.
+const CHUNK_SIZE = 8388384
+const MAX_CHUNK_RETRIES = 5
+
+const uploadMessages: Record<string, string> = {
+  NO_ACCOUNT_WITH_ENOUGH_SPACE: 'The family storage pool does not have enough free space (two storage accounts with room are needed). Ask the admin to add storage.',
+  USER_STORAGE_LIMIT_REACHED: 'You have reached your storage limit. Delete some files or ask the admin to raise it.',
+  STORAGE_ACCOUNT_QUOTA_EXCEEDED: 'A storage account ran out of space during the upload. Try again later or ask the admin to add storage.',
+  STORAGE_ACCOUNT_UNAVAILABLE: 'A storage account is unavailable right now. Try again later or tell the admin.',
+  UPLOAD_SIZE_REQUIRED: 'This file is empty or its size is unknown. Empty files cannot be uploaded.',
+  UPLOAD_TOO_LARGE: 'This file is larger than the maximum upload size.',
+  CHUNK_NOT_ALIGNED: 'The upload went out of step with the server. Use Retry to continue.',
+  UPLOAD_NOT_ACTIVE: 'This upload is no longer active. Use Retry to start it again.',
+  FOLDER_NOT_FOUND: 'The target folder no longer exists.',
+}
+
+class UploadFailure extends Error {
+  code?: string
+  constructor(message: string, code?: string) {
+    super(message)
+    this.code = code
+  }
+}
+
+function failureFrom(error: unknown): UploadFailure {
+  if (error instanceof UploadFailure) return error
+  const code = errorCode(error)
+  const fallback = errorMessage(error, 'Upload failed')
+  return new UploadFailure((code && uploadMessages[code]) || fallback, code)
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export function UploadProvider({ children }: { children: ReactNode }) {
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState>({
@@ -27,77 +60,97 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   })
   const [resumableSessions, setResumableSessions] = useState<Record<string, ResumableSession>>({})
 
-  async function uploadSingleFileResumable(file: File, folderId: string | null, onProgress: (percent: number) => void, sessionIdToRetry?: string, targetAccountId?: string | null) {
-    const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks (must be multiple of 256KB for Google Drive)
+  async function sendChunk(sessionId: string, file: File, startOffset: number, chunkSize: number) {
+    const endOffset = Math.min(startOffset + chunkSize, file.size)
+    const chunk = file.slice(startOffset, endOffset)
+    // Raw fetch with the bearer token for the binary body.
+    const response = await fetch(`${API_URL}/uploads/resumable/chunk/${sessionId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${getAccessToken()}`,
+        'Content-Range': `bytes ${startOffset}-${endOffset - 1}/${file.size}`,
+      },
+      body: chunk
+    })
+    if (response.ok) return await response.json() as { status: string; offset?: string }
+    const body = await response.json().catch(() => ({})) as { code?: string; message?: string }
+    throw new ApiError(response.status, body.message ?? 'Chunk upload failed', body.code, body)
+  }
+
+  async function uploadSingleFileResumable(file: File, folderId: string | null, onProgress: (percent: number) => void, sessionIdToRetry?: string) {
+    if (file.size === 0) throw new UploadFailure(uploadMessages.UPLOAD_SIZE_REQUIRED, 'UPLOAD_SIZE_REQUIRED')
+
     let sessionId = sessionIdToRetry || ''
     let startOffset = 0
+    let chunkSize = CHUNK_SIZE
 
     // Pre-save session parameters so that retry is functional even if the init API call fails
-    setResumableSessions(prev => ({
-      ...prev,
-      [file.name]: { sessionId, file, folderId, targetAccountId }
-    }))
+    setResumableSessions(prev => ({ ...prev, [file.name]: { sessionId, file, folderId } }))
 
-    // 1. Initialize or get status
-    if (!sessionId) {
-      const initData = await apiFetch<{ sessionId: string; provider: string }>('/uploads/resumable/init', {
-        method: 'POST',
-        body: JSON.stringify({
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          sizeBytes: String(file.size),
-          folderId: folderId || undefined,
-          targetAccountId: targetAccountId || undefined
+    try {
+      // A retry resumes only a session the server still considers active.
+      if (sessionId) {
+        const statusData = await apiFetch<{ status: string; offset: string }>(`/uploads/resumable/status/${sessionId}`).catch(() => null)
+        if (statusData?.status === 'completed') {
+          onProgress(100)
+          return
+        }
+        if (statusData?.status === 'uploading') startOffset = Number(statusData.offset)
+        else sessionId = ''
+      }
+
+      if (!sessionId) {
+        const initData = await apiFetch<{ sessionId: string; chunkSize?: string | number }>('/uploads/resumable/init', {
+          method: 'POST',
+          body: JSON.stringify({
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            sizeBytes: String(file.size),
+            folderId: folderId || undefined,
+          })
         })
-      })
-      sessionId = initData.sessionId
-      // Update session with the active sessionId
-      setResumableSessions(prev => ({
-        ...prev,
-        [file.name]: { sessionId, file, folderId, targetAccountId }
-      }))
-    } else {
-      const statusData = await apiFetch<{ status: string; offset: string }>(`/uploads/resumable/status/${sessionId}`)
-      startOffset = Number(statusData.offset)
-      if (statusData.status === 'completed') {
-        onProgress(100)
-        return
-      }
-    }
-
-    // 2. Upload chunk by chunk
-    while (startOffset < file.size) {
-      const endOffset = Math.min(startOffset + CHUNK_SIZE, file.size)
-      const chunk = file.slice(startOffset, endOffset)
-
-      // We use raw fetch with authorization header for binary stream upload
-      const response = await fetch(`${API_URL}/uploads/resumable/chunk/${sessionId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${getAccessToken()}`,
-          'Content-Range': `bytes ${startOffset}-${endOffset - 1}/${file.size}`,
-          'Content-Length': String(chunk.size)
-        },
-        body: chunk
-      })
-
-      if (!response.ok) {
-        throw new Error('Chunk upload failed')
+        sessionId = initData.sessionId
+        const serverChunk = Number(initData.chunkSize)
+        if (Number.isFinite(serverChunk) && serverChunk > 0) chunkSize = serverChunk
+        setResumableSessions(prev => ({ ...prev, [file.name]: { sessionId, file, folderId } }))
       }
 
-      const resData = await response.json() as { status: string; offset?: string }
-      if (resData.status === 'completed') {
-        onProgress(100)
-        break
+      let retries = 0
+      while (startOffset < file.size) {
+        try {
+          const resData = await sendChunk(sessionId, file, startOffset, chunkSize)
+          retries = 0
+          if (resData.status === 'completed') {
+            onProgress(100)
+            return
+          }
+          startOffset = Number(resData.offset)
+          onProgress(Math.min(99, Math.round((startOffset / file.size) * 100)))
+        } catch (err) {
+          const code = errorCode(err)
+          // A dropped connection or a server asking for a retry: ask where the server got to and carry on from there.
+          const transient = code === 'UPLOAD_CHUNK_RETRY' || !(err instanceof ApiError)
+          if (!transient || retries >= MAX_CHUNK_RETRIES) {
+            if (transient) throw new UploadFailure('The upload kept failing after several attempts. Check your connection and use Retry.', code)
+            throw err
+          }
+          retries += 1
+          await wait(Math.min(500 * 2 ** retries, 8000))
+          const statusData = await apiFetch<{ status: string; offset: string }>(`/uploads/resumable/status/${sessionId}`)
+          if (statusData.status === 'completed') {
+            onProgress(100)
+            return
+          }
+          if (statusData.status !== 'uploading') throw new UploadFailure(uploadMessages.UPLOAD_NOT_ACTIVE, 'UPLOAD_NOT_ACTIVE')
+          startOffset = Number(statusData.offset)
+        }
       }
-
-      startOffset = Number(resData.offset)
-      const percent = Math.min(99, Math.round((startOffset / file.size) * 100))
-      onProgress(percent)
+    } catch (err) {
+      throw failureFrom(err)
     }
   }
 
-  async function uploadFiles(filesToUpload: File[], targetFolderId: string | null, targetAccountId?: string | null) {
+  async function uploadFiles(filesToUpload: File[], targetFolderId: string | null) {
     if (filesToUpload.length === 0) return
 
     // Setup initial status
@@ -126,13 +179,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
               files: nextFiles
             }
           })
-        }, undefined, targetAccountId)
+        })
       } catch (err) {
         console.error('File upload failed:', file.name, err)
+        const message = failureFrom(err).message
         setUploadProgress((current) => {
           const nextFiles = [...current.files]
           if (nextFiles[i]) {
-            nextFiles[i] = { ...nextFiles[i], status: 'error' }
+            nextFiles[i] = { ...nextFiles[i], status: 'error', message }
           }
           return {
             ...current,
@@ -142,6 +196,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         })
       }
     }
+
+    setUploadProgress((current) => current.status === 'uploading' && current.files.every((f) => f.status === 'done') ? { ...current, status: 'done', percent: 100 } : current)
 
     // Dispatch global events so active pages reload their data
     window.dispatchEvent(new Event('9drive:storage-changed'))
@@ -153,7 +209,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     if (!session) return
 
     setUploadProgress((current) => {
-      const nextFiles = current.files.map(f => f.name === fileName ? { ...f, status: 'uploading' as const } : f)
+      const nextFiles = current.files.map(f => f.name === fileName ? { ...f, status: 'uploading' as const, message: undefined } : f)
       return {
         ...current,
         status: 'uploading',
@@ -178,14 +234,15 @@ export function UploadProvider({ children }: { children: ReactNode }) {
             files: nextFiles
           }
         })
-      }, session.sessionId, session.targetAccountId)
+      }, session.sessionId)
 
       window.dispatchEvent(new Event('9drive:storage-changed'))
       window.dispatchEvent(new Event('9drive:upload-completed'))
     } catch (err) {
       console.error('Retry upload failed:', fileName, err)
+      const message = failureFrom(err).message
       setUploadProgress((current) => {
-        const nextFiles = current.files.map(f => f.name === fileName ? { ...f, status: 'error' as const } : f)
+        const nextFiles = current.files.map(f => f.name === fileName ? { ...f, status: 'error' as const, message } : f)
         return {
           ...current,
           status: 'partial',
