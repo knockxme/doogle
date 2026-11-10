@@ -1,6 +1,7 @@
 import type { Response } from 'express'
 import { pipeline } from 'node:stream'
 import { parseRange } from '../crypto/range.js'
+import { servedAs, setFileSecurityHeaders } from './content-type.js'
 import { FileUnavailableError, openDecryptedStream, type FileWithReplicas } from './decrypt-stream.js'
 
 export type { FileWithReplicas } from './decrypt-stream.js'
@@ -14,6 +15,7 @@ export function contentDisposition(type: 'inline' | 'attachment', fileName: stri
 }
 
 export async function streamProviderFile(file: FileWithReplicas, range: string | undefined, res: Response, options: StreamOptions = {}) {
+  setFileSecurityHeaders(res)
   const size = file.sizeBytes
   const parsed = parseRange(range, size)
   if (parsed === 'unsatisfiable') {
@@ -31,11 +33,12 @@ export async function streamProviderFile(file: FileWithReplicas, range: string |
 
   const length = parsed ? parsed.end - parsed.start + 1n : size
   res.status(parsed ? 206 : 200)
-  res.setHeader('Content-Type', file.mimeType)
+  const served = servedAs(file.mimeType, options.disposition)
+  res.setHeader('Content-Type', served.contentType)
   res.setHeader('Accept-Ranges', 'bytes')
   res.setHeader('Content-Length', length.toString())
   if (parsed) res.setHeader('Content-Range', `bytes ${parsed.start}-${parsed.end}/${size}`)
-  if (options.disposition) res.setHeader('Content-Disposition', contentDisposition(options.disposition, file.name))
+  res.setHeader('Content-Disposition', contentDisposition(served.disposition, file.name))
 
   await new Promise<void>((resolve) => {
     pipeline(stream, res, (err) => {

@@ -368,3 +368,82 @@ test('zip client disconnect while the next file is opening destroys that stream'
     setTestProvider(memoryProvider)
   }
 })
+
+async function previewToken(id: string) {
+  const token = randomUUID()
+  await prisma.filePreviewToken.create({ data: { fileId: id, userId: owner.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 60_000) } })
+  return token
+}
+
+async function shareToken(id: string) {
+  const token = randomUUID()
+  await prisma.fileShare.create({ data: { fileId: id, userId: owner.id, token, tokenHash: hashToken(token), enabled: true } })
+  return token
+}
+
+/** Every way a file's bytes leave the server: owner download, preview token, public download, public preview. */
+async function servedResponses(id: string) {
+  const preview = await previewToken(id)
+  const share = await shareToken(id)
+  const out: [string, Response][] = []
+  for (const [label, path, authed] of [
+    ['download', `/files/${id}/download`, true],
+    ['preview-token', `/files/preview/${preview}`, false],
+    ['public-download', `/public/files/${share}/download`, false],
+    ['public-preview', `/public/files/${share}/preview`, false],
+  ] as const) out.push([label, await get(path, {}, authed)])
+  return out
+}
+
+function assertHardened(res: Response, label: string) {
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff', label)
+  assert.equal(res.headers.get('content-security-policy'), "sandbox; default-src 'none'", label)
+}
+
+test('html and svg are served as attachment octet-stream with nosniff and a sandbox CSP', async () => {
+  for (const [name, mime] of [['page.html', 'text/html'], ['drawing.svg', 'image/svg+xml']] as const) {
+    const bytes = Buffer.from(mime === 'text/html' ? '<script>alert(1)</script>' : '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')
+    const id = await upload(bytes, name, mime)
+    for (const [label, res] of await servedResponses(id)) {
+      assert.equal(res.status, 200, `${mime} ${label}`)
+      assert.equal(res.headers.get('content-type'), 'application/octet-stream', `${mime} ${label}`)
+      assert.match(res.headers.get('content-disposition')!, /^attachment;/, `${mime} ${label}`)
+      assertHardened(res, `${mime} ${label}`)
+      assert.ok(Buffer.from(await res.arrayBuffer()).equals(bytes))
+    }
+  }
+})
+
+test('png previews inline with its type, downloads as attachment, both hardened', async () => {
+  const bytes = randomBytes(500)
+  const id = await upload(bytes, 'pic.png', 'image/png')
+  for (const [label, res] of await servedResponses(id)) {
+    assert.equal(res.status, 200, label)
+    assert.equal(res.headers.get('content-type'), 'image/png', label)
+    assert.match(res.headers.get('content-disposition')!, label.includes('download') ? /^attachment;/ : /^inline;/, label)
+    assertHardened(res, label)
+    await res.arrayBuffer()
+  }
+})
+
+test('invalid characters in mimeType fall back to octet-stream instead of a 500', async () => {
+  const bytes = randomBytes(300)
+  const id = await upload(bytes, 'evil.png', 'image/png\r\nX-Evil: 1')
+  assert.equal((await prisma.file.findUniqueOrThrow({ where: { id } })).mimeType, 'application/octet-stream')
+  // A row stored before validation existed must not break the response either.
+  await prisma.file.update({ where: { id }, data: { mimeType: 'image/png\u0001' } })
+  for (const [label, res] of await servedResponses(id)) {
+    assert.equal(res.status, 200, label)
+    assert.equal(res.headers.get('content-type'), 'application/octet-stream', label)
+    assert.equal(res.headers.get('x-evil'), null, label)
+    assertHardened(res, label)
+    assert.ok(Buffer.from(await res.arrayBuffer()).equals(bytes))
+  }
+})
+
+test('zip download carries nosniff and the sandbox CSP', async () => {
+  const res = await fetch(`${base}/files/batch-download`, { method: 'POST', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIds: [fileId] }) })
+  assert.equal(res.status, 200)
+  assertHardened(res, 'zip')
+  await res.arrayBuffer()
+})

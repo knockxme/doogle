@@ -7,6 +7,7 @@ import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { UPLOAD_CHUNK_PLAINTEXT } from '../crypto/frames.js'
+import { normalizeMimeType } from '../files/content-type.js'
 import { PoolError } from '../storage/pool-errors.js'
 import { failUpload, resumeOffset, startEncryptedUpload, UploadError, writeEncryptedChunk, type UploadedFile } from './encrypted-upload.js'
 
@@ -15,7 +16,8 @@ export const uploadRouter = Router()
 const CHUNK = BigInt(UPLOAD_CHUNK_PLAINTEXT)
 const sizeString = z.string().regex(/^-?\d+$/)
 const fileNameSchema = z.string().min(1).max(255)
-const mimeTypeSchema = z.string().min(1).max(191)
+// Never rejects: anything that is not a strict type/subtype is stored as application/octet-stream.
+const mimeTypeSchema = z.string().transform(normalizeMimeType)
 const filesMetaSchema = z.array(z.object({
   fieldName: z.string(),
   fileName: fileNameSchema,
@@ -105,7 +107,7 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
       if (batchMeta) return batchMeta.find((item) => item.fieldName === fieldName)
       const sizeBytes = fields.sizeBytes
       if (!sizeBytes) return null
-      return { fieldName, sizeBytes, fileName: fields.fileName || info.filename, mimeType: fields.mimeType || info.mimeType || 'application/octet-stream', folderId: fields.folderId }
+      return { fieldName, sizeBytes, fileName: fields.fileName || info.filename, mimeType: normalizeMimeType(fields.mimeType || info.mimeType), folderId: fields.folderId }
     }
 
     const uploadOne = async (meta: UploadMeta | null | undefined, fileStream: Readable, info: { filename: string }) => {
@@ -166,10 +168,7 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
         if (value.length > 255) return fail(400, 'VALIDATION_ERROR', 'Invalid fileName.')
         fields.fileName = value
       }
-      if (name === 'mimeType') {
-        if (value.length > 191) return fail(400, 'VALIDATION_ERROR', 'Invalid mimeType.')
-        fields.mimeType = value
-      }
+      if (name === 'mimeType') fields.mimeType = value
       if (name === 'folderId') fields.folderId = value
     })
 

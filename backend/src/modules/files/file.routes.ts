@@ -6,6 +6,7 @@ import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from './delete-blobs.js'
 import { streamProviderFile } from './stream-file.js'
+import { setFileSecurityHeaders } from './content-type.js'
 import { openDecryptedStream, readableFileArgs } from './decrypt-stream.js'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
@@ -307,6 +308,7 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
     })
     if (files.length === 0) return res.status(404).json({ code: 'FILES_NOT_FOUND', message: 'No files found.' })
 
+    setFileSecurityHeaders(res)
     res.setHeader('Content-Type', 'application/zip')
     res.setHeader('Content-Disposition', 'attachment; filename="9drive-download.zip"')
 

@@ -1,8 +1,11 @@
 export type PreviewKind = 'image' | 'video' | 'audio' | 'document'
 
+const inlineImageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'])
+
 export function getPreviewKind(mimeType: string | undefined): PreviewKind | null {
   if (!mimeType) return null
-  if (mimeType.startsWith('image/')) return 'image'
+  // Matches the backend inline allowlist; SVG can run script and is never previewed inline.
+  if (inlineImageTypes.has(mimeType)) return 'image'
   if (mimeType.startsWith('video/')) return 'video'
   if (mimeType.startsWith('audio/')) return 'audio'
   if (mimeType === 'application/pdf') return 'document'
