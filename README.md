@@ -40,6 +40,8 @@ The backend is bound to `127.0.0.1:4000` and trusts one proxy hop. For internet 
 
 The backend refuses to start if `FILE_MASTER_KEY` is wrong for the existing data.
 
+**Warning:** `docker compose down -v` deletes the `mysql_data` volume (the database) and the `backups` volume (every local backup) in one command. Use plain `docker compose down` to stop. Never use `-v` unless you have copies of both off the server.
+
 Without Docker, `./setup.sh` (or `setup.ps1` on Windows) creates `backend/.env` and `frontend/.env`, generates and shows the master key once, and offers to create the first admin. You need Node.js 20+ and MySQL 8+.
 
 ## Google Cloud setup
@@ -72,6 +74,7 @@ The database is the only map from encrypted blobs to files, and it holds the wra
 
 - Backups never contain `FILE_MASTER_KEY`. The key is only in `.env`.
 - Copy **both** off the server regularly, and store them in **different places**: dumps from the volume, and the key kept offline.
+- `docker compose down -v` also deletes the `backups` volume, together with the database. Do not use `-v`.
 - To copy the latest dump out:
 
 ```bash
@@ -79,6 +82,8 @@ docker compose cp backup:/backups/. ./backups-copy/
 ```
 
 ### Restore
+
+**Restoring replaces the current database** (the dump drops and recreates every table). Take a fresh dump of the current state first, and copy it off the server. The `FILE_MASTER_KEY` in use must be the one that matches the backup being restored; with a different key the backend refuses to start, or files cannot be read.
 
 ```bash
 docker compose stop backend
