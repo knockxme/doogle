@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { effectiveFree, pickPair, usablePoolBytes, type Candidate } from '../src/modules/storage/pool-select.js'
+import { effectiveFree, pickAccounts, pickPair, usablePoolBytes, type Candidate } from '../src/modules/storage/pool-select.js'
 
 const GB = 1024n ** 3n
 const now = new Date('2026-11-10T12:00:00Z')
@@ -91,4 +91,25 @@ test('usablePoolBytes halves the summed effective free of unpaused accounts', ()
 })
 test('usablePoolBytes is null when any usable account is unlimited', () => {
   assert.equal(usablePoolBytes([cand(), cand({ providerFreeBytes: null })], now), null)
+})
+
+test('with one copy, a single account with room is enough and the most free one wins', () => {
+  const small = cand({ providerFreeBytes: 10n * GB })
+  const big = cand({ providerFreeBytes: 90n * GB })
+  assert.deepEqual(pickAccounts([small, big], 5n * GB, mostAvailable, now, 1), [big.id])
+  assert.deepEqual(pickAccounts([cand({ providerFreeBytes: 1n * GB }), small], 5n * GB, mostAvailable, now, 1), [small.id])
+  assert.equal(pickAccounts([small], 5n * GB, mostAvailable, now, 2), null)
+})
+
+test('usable space is the full free space with one copy, half with two', () => {
+  const cs = [cand({ providerFreeBytes: 10n * GB }), cand({ providerFreeBytes: 30n * GB })]
+  assert.equal(usablePoolBytes(cs, now, 1), 40n * GB)
+  assert.equal(usablePoolBytes(cs, now, 2), 20n * GB)
+})
+
+test('round robin with one copy takes turns', () => {
+  const a = cand()
+  const b = cand()
+  const rr = (cursor: number) => pickAccounts([a, b], 1n, { mode: 'round_robin', priorityAccountIds: [], cursor }, now, 1)
+  assert.deepEqual([rr(0), rr(1)], [[a.id], [b.id]])
 })

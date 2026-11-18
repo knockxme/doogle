@@ -22,7 +22,7 @@ const CHUNK_SIZE = 8388384
 const MAX_CHUNK_RETRIES = 5
 
 const uploadMessages: Record<string, string> = {
-  NO_ACCOUNT_WITH_ENOUGH_SPACE: 'The family storage pool does not have enough free space (two storage accounts with room are needed). Ask the admin to add storage.',
+  NO_ACCOUNT_WITH_ENOUGH_SPACE: 'The storage pool does not have enough free space. Ask the admin to add storage.',
   USER_STORAGE_LIMIT_REACHED: 'You have reached your storage limit. Delete some files or ask the admin to raise it.',
   STORAGE_ACCOUNT_QUOTA_EXCEEDED: 'A storage account ran out of space during the upload. Try again later or ask the admin to add storage.',
   STORAGE_ACCOUNT_UNAVAILABLE: 'A storage account is unavailable right now. Try again later or tell the admin.',

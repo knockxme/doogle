@@ -20,8 +20,8 @@ type PoolAccount = {
   full: boolean
 }
 type HealthAccount = { id: string; email: string; status: string; lastError: string | null; healthyCopies: number; lostCopies: number; full: boolean }
-type Health = { accounts: HealthAccount[]; filesMissingCopy: number }
-type Settings = { defaultAccountCapBytes: string | null; routingMode: RoutingMode; priorityAccountIds: string[] }
+type Health = { accounts: HealthAccount[]; filesMissingCopy: number; copiesPerFile?: 1 | 2 }
+type Settings = { copiesPerFile: 1 | 2; defaultAccountCapBytes: string | null; routingMode: RoutingMode; priorityAccountIds: string[] }
 type RoutingMode = 'most_available' | 'round_robin' | 'priority'
 type RepairJob = { id: string; status: 'running' | 'completed' | 'failed'; processed: number; failed: number; startedAt: string; finishedAt: string | null }
 type GoogleConfig = { exists: boolean; clientId?: string; redirectUri?: string; hasSecret?: boolean; defaultRedirectUri: string }
@@ -148,6 +148,18 @@ export function AdminStoragePage() {
     }
   }
 
+  async function toggleSecondCopy() {
+    const turnOff = settings?.copiesPerFile !== 1
+    if (turnOff && !window.confirm('Turn off the second copy?\n\nNew files will be stored on one account only. If that account is lost, those files are gone for good. Files that already have two copies keep them.')) return
+    try {
+      setSettings(await apiFetch<Settings>('/admin/storage/settings', { method: 'PATCH', body: JSON.stringify({ copiesPerFile: turnOff ? 1 : 2 }) }))
+      setMessage(turnOff ? 'Second copy is off. New files are stored once.' : 'Second copy is on. Press Repair to add a second copy to files stored only once.')
+      await load()
+    } catch (error) {
+      setMessage(readable(error, 'Failed to save the copy setting'))
+    }
+  }
+
   async function saveRouting(next: Partial<Settings>) {
     try {
       setSettings(await apiFetch<Settings>('/admin/storage/settings', { method: 'PATCH', body: JSON.stringify(next) }))
@@ -253,7 +265,7 @@ export function AdminStoragePage() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-bold">Health</h2>
-              <p className="mt-1 text-sm text-slate-500">Files that have fewer than two healthy copies.</p>
+              <p className="mt-1 text-sm text-slate-500">{health?.copiesPerFile === 1 ? 'Files that have no healthy copy left.' : 'Files that have fewer than two healthy copies.'}</p>
             </div>
             <Button onClick={startRepair} disabled={repairStarting || running}><Wrench className="h-4 w-4" />{running ? 'Repairing...' : 'Repair'}</Button>
           </div>
@@ -273,6 +285,15 @@ export function AdminStoragePage() {
 
         <Card className="p-5">
           <h2 className="text-lg font-bold">Caps and routing</h2>
+          <div className="mt-3 flex items-start justify-between gap-3 rounded-xl bg-slate-50 p-3">
+            <div>
+              <p className="text-sm font-semibold">Second copy: {settings?.copiesPerFile === 1 ? 'off' : 'on'}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{settings?.copiesPerFile === 1
+                ? 'New files are stored on one account, so all free space can be used. If an account is lost, its files are gone.'
+                : 'Every new file is stored on two different accounts, so losing one account loses nothing. Uses twice the space.'}</p>
+            </div>
+            <Button size="sm" variant="outline" disabled={!settings} onClick={toggleSecondCopy}>{settings?.copiesPerFile === 1 ? 'Turn on' : 'Turn off'}</Button>
+          </div>
           <form onSubmit={saveDefaultCap} className="mt-3 grid gap-2">
             <label className="text-sm font-semibold">Default cap for new accounts (GB)</label>
             <div className="flex gap-2">

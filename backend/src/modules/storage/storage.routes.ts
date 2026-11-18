@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
-import { loadCandidates, userAvailable } from './pool.js'
+import { getCopiesPerFile, loadCandidates, userAvailable } from './pool.js'
 import { usablePoolBytes } from './pool-select.js'
 
 export const storageRouter = Router()
@@ -24,7 +24,7 @@ storageRouter.get('/summary', async (req: AuthRequest, res, next) => {
       availableBytes: usage.availableBytes?.toString() ?? null,
     }
     if (req.user!.role === 'admin') {
-      const usable = usablePoolBytes(await loadCandidates(), new Date())
+      const usable = usablePoolBytes(await loadCandidates(), new Date(), await getCopiesPerFile())
       body.poolUsableBytes = usable?.toString() ?? null
     }
     return res.json(body)

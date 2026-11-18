@@ -50,35 +50,50 @@ function rank(c: Candidate): { tier: number; free: bigint } {
   return { tier: 1, free }
 }
 
-export function pickPair(cs: Candidate[], needBytes: bigint, policy: RoutingPolicy, now: Date): [string, string] | null {
+/** How many copies each new file gets: 2 (a second copy on another account) or 1. */
+export type CopyCount = 1 | 2
+
+export function normalizeCopies(value: unknown): CopyCount {
+  return value === 1 ? 1 : 2
+}
+
+/** Picks `copies` different accounts that all fit the file, by the routing policy. null when too few fit. */
+export function pickAccounts(cs: Candidate[], needBytes: bigint, policy: RoutingPolicy, now: Date, copies: CopyCount): string[] | null {
   const eligible = cs.filter((c) => {
     if (isPaused(c, now)) return false
     const free = effectiveFree(c)
     return free === null || free >= needBytes
   })
-  if (eligible.length < 2) return null
+  if (eligible.length < copies) return null
 
+  let ordered: Candidate[]
   if (policy.mode === 'priority') {
-    const ordered = byPriority(eligible, policy.priorityAccountIds)
-    return [ordered[0].id, ordered[1].id]
+    ordered = byPriority(eligible, policy.priorityAccountIds)
+  } else if (policy.mode === 'round_robin') {
+    const byOrder = byPriority(eligible, policy.priorityAccountIds)
+    const start = ((policy.cursor % byOrder.length) + byOrder.length) % byOrder.length
+    ordered = [...byOrder.slice(start), ...byOrder.slice(0, start)]
+  } else {
+    ordered = eligible
+      .map((c) => ({ c, ...rank(c) }))
+      .sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier
+        if (a.free !== b.free) return a.free > b.free ? -1 : 1
+        return a.c.createdAt.getTime() - b.c.createdAt.getTime()
+      })
+      .map((x) => x.c)
   }
-  if (policy.mode === 'round_robin') {
-    const ordered = byPriority(eligible, policy.priorityAccountIds)
-    const start = ((policy.cursor % ordered.length) + ordered.length) % ordered.length
-    return [ordered[start].id, ordered[(start + 1) % ordered.length].id]
-  }
-  const ranked = eligible
-    .map((c) => ({ c, ...rank(c) }))
-    .sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier
-      if (a.free !== b.free) return a.free > b.free ? -1 : 1
-      return a.c.createdAt.getTime() - b.c.createdAt.getTime()
-    })
-  return [ranked[0].c.id, ranked[1].c.id]
+  return ordered.slice(0, copies).map((c) => c.id)
 }
 
-/** Room for new files: summed free space of unpaused accounts, halved because every file is stored twice. null when any is unlimited. */
-export function usablePoolBytes(cs: Candidate[], now: Date): bigint | null {
+/** Two different accounts for a file. Kept for callers and tests that always want a pair. */
+export function pickPair(cs: Candidate[], needBytes: bigint, policy: RoutingPolicy, now: Date): [string, string] | null {
+  const ids = pickAccounts(cs, needBytes, policy, now, 2)
+  return ids ? [ids[0]!, ids[1]!] : null
+}
+
+/** Room for new files: summed free space of unpaused accounts, divided by the copies each file takes. null when any is unlimited. */
+export function usablePoolBytes(cs: Candidate[], now: Date, copies: CopyCount = 2): bigint | null {
   let total = 0n
   for (const c of cs) {
     if (isPaused(c, now)) continue
@@ -86,5 +101,5 @@ export function usablePoolBytes(cs: Candidate[], now: Date): bigint | null {
     if (free === null) return null
     total += free
   }
-  return total / 2n
+  return total / BigInt(copies)
 }

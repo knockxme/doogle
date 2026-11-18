@@ -6,7 +6,7 @@ import { encryptedSize } from '../crypto/frames.js'
 import { syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota } from '../s3/s3.service.js'
 import { PoolError } from './pool-errors.js'
-import { effectiveFree, pickPair, usablePoolBytes, type Candidate } from './pool-select.js'
+import { effectiveFree, normalizeCopies, pickAccounts, usablePoolBytes, type Candidate, type CopyCount } from './pool-select.js'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
@@ -25,6 +25,12 @@ export function initialCapForConnect(existing: { capBytes: bigint | null } | nul
 export async function getDefaultCapBytes(db: Db = prisma): Promise<bigint | null> {
   const setting = await db.appSetting.findUnique({ where: { id: 1 } })
   return setting?.defaultAccountCapBytes ?? null
+}
+
+/** Copies every new file gets (admin setting: 2 = second copy on, 1 = off). */
+export async function getCopiesPerFile(db: Db = prisma): Promise<CopyCount> {
+  const setting = await db.appSetting.findUnique({ where: { id: 1 }, select: { copiesPerFile: true } })
+  return normalizeCopies(setting?.copiesPerFile ?? 2)
 }
 
 export async function syncQuotaForAccount(account: { id: string; provider: string }) {
@@ -91,7 +97,7 @@ export async function userStorage(userId: string, db: Db = prisma): Promise<{ us
 /** What a user may still upload: the lower of their limit remaining and the pool's usable space. null only when both are unlimited. */
 export async function userAvailable(userId: string): Promise<{ usedBytes: bigint; limitBytes: bigint | null; availableBytes: bigint | null }> {
   const usage = await userStorage(userId)
-  const pool = usablePoolBytes(await loadCandidates(), new Date())
+  const pool = usablePoolBytes(await loadCandidates(), new Date(), await getCopiesPerFile())
   const availableBytes = usage.availableBytes === null ? pool : pool === null ? usage.availableBytes : (usage.availableBytes < pool ? usage.availableBytes : pool)
   return { ...usage, availableBytes }
 }
@@ -100,7 +106,7 @@ function normalizeIds(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
 }
 
-export async function reserveUpload(args: { userId: string; plainSize: bigint; fileName: string; mimeType: string; folderId: string | null }): Promise<{ session: UploadSession; fileKey: Buffer; accounts: [ConnectedAccount, ConnectedAccount] }> {
+export async function reserveUpload(args: { userId: string; plainSize: bigint; fileName: string; mimeType: string; folderId: string | null }): Promise<{ session: UploadSession; fileKey: Buffer; accounts: ConnectedAccount[] }> {
   await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
   await resyncStale()
   const need = encryptedSize(args.plainSize)
@@ -118,9 +124,10 @@ export async function reserveUpload(args: { userId: string; plainSize: bigint; f
     }
 
     const mode = (['most_available', 'round_robin', 'priority'] as const).find((m) => m === setting.routingMode) ?? 'most_available'
+    const copies = normalizeCopies(setting.copiesPerFile)
     const candidates = await loadCandidates(tx)
-    const pair = pickPair(candidates, need, { mode, priorityAccountIds: normalizeIds(setting.priorityAccountIds), cursor: setting.roundRobinCursor }, new Date())
-    if (!pair) throw new PoolError('NO_ACCOUNT_WITH_ENOUGH_SPACE', 'No two storage accounts have enough free space.', 507)
+    const picked = pickAccounts(candidates, need, { mode, priorityAccountIds: normalizeIds(setting.priorityAccountIds), cursor: setting.roundRobinCursor }, new Date(), copies)
+    if (!picked) throw new PoolError('NO_ACCOUNT_WITH_ENOUGH_SPACE', copies === 2 ? 'No two storage accounts have enough free space.' : 'No storage account has enough free space.', 507)
 
     const session = await tx.uploadSession.create({
       omit: { wrappedFileKey: false },
@@ -133,14 +140,14 @@ export async function reserveUpload(args: { userId: string; plainSize: bigint; f
         status: 'uploading',
         fileId,
         wrappedFileKey: wrapped,
-        replicas: { create: pair.map((connectedAccountId) => ({ connectedAccountId, reservedBytes: need })) },
+        replicas: { create: picked.map((connectedAccountId) => ({ connectedAccountId, reservedBytes: need })) },
       },
     })
     if (mode === 'round_robin') await tx.appSetting.update({ where: { id: 1 }, data: { roundRobinCursor: setting.roundRobinCursor + 1 } })
 
-    const rows = await tx.connectedAccount.findMany({ where: { id: { in: pair } } })
+    const rows = await tx.connectedAccount.findMany({ where: { id: { in: picked } } })
     const byId = new Map(rows.map((r) => [r.id, r]))
-    return { session, fileKey, accounts: [byId.get(pair[0])!, byId.get(pair[1])!] as [ConnectedAccount, ConnectedAccount] }
+    return { session, fileKey, accounts: picked.map((id) => byId.get(id)!) }
   }, { timeout: 15_000, maxWait: 15_000 })
 }
 

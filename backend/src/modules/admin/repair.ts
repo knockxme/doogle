@@ -4,7 +4,7 @@ import type { ConnectedAccount, Prisma, RepairJob } from '@prisma/client'
 import { prisma } from '../../config/prisma.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
 import { FRAME_SIZE } from '../crypto/frames.js'
-import { markAccountUnhealthy, reserveRepairTarget } from '../storage/pool.js'
+import { getCopiesPerFile, markAccountUnhealthy, reserveRepairTarget } from '../storage/pool.js'
 import { ProviderQuotaError, ProviderUnavailableError, providerFor, type ReplicaUploadState } from '../storage/provider.js'
 
 const BATCH_BYTES = 8n * BigInt(FRAME_SIZE)
@@ -42,14 +42,18 @@ const loadPage = (cursor: string | undefined) => prisma.file.findMany({
 })
 type RepairFile = Awaited<ReturnType<typeof loadPage>>[number]
 
-/** Files (active or in trash) with fewer than two usable copies, in id order, a page at a time. */
-export async function* filesMissingCopy(): AsyncGenerator<RepairFile> {
+/**
+ * Files (active or in trash) with fewer usable copies than the setting asks for (two, or one with the second
+ * copy turned off), in id order, a page at a time. Files kept with more copies than needed are left alone.
+ */
+export async function* filesMissingCopy(required?: number): AsyncGenerator<RepairFile> {
+  const need = required ?? (await getCopiesPerFile())
   let cursor: string | undefined
   for (;;) {
     const files = await loadPage(cursor)
     if (files.length === 0) return
     cursor = files[files.length - 1]!.id
-    for (const file of files) if (file.replicas.filter(isUsableCopy).length < 2) yield file
+    for (const file of files) if (file.replicas.filter(isUsableCopy).length < need) yield file
   }
 }
 
@@ -102,12 +106,12 @@ const reloadFile = (id: string) => prisma.file.findUnique({
   include: { replicas: { include: { connectedAccount: { select: { status: true } } } } },
 })
 
-async function repairOne(snapshot: RepairFile): Promise<'repaired' | 'failed' | 'gone'> {
+async function repairOne(snapshot: RepairFile, required: number): Promise<'repaired' | 'failed' | 'gone'> {
   // The page was read earlier; account and copy status may have changed since.
   const file = await reloadFile(snapshot.id)
   if (!file) return 'gone'
   const usable = file.replicas.filter(isUsableCopy)
-  if (usable.length >= 2) return 'gone'
+  if (usable.length >= required) return 'gone'
   const survivor = usable[0]
   if (!survivor) return 'failed'
   const total = file.encryptedSizeBytes
@@ -153,7 +157,7 @@ async function repairOne(snapshot: RepairFile): Promise<'repaired' | 'failed' | 
     const current = await tx.file.findUnique({ where: { id: file.id }, select: { id: true, replicas: { include: { connectedAccount: { select: { status: true } } } } } })
     if (!current) return 'gone' as const
     const nowUsable = current.replicas.filter(isUsableCopy)
-    if (nowUsable.length >= 2) return 'gone' as const
+    if (nowUsable.length >= required) return 'gone' as const
     if (nowUsable.length === 0) return 'failed' as const
     for (const r of current.replicas.filter((x) => !isUsableCopy(x))) {
       await tx.fileReplica.delete({ where: { id: r.id } })
@@ -254,10 +258,11 @@ async function runJob(jobId: string) {
   try {
     // First check every copy, so ones that vanished without anyone reading them get rebuilt too.
     await verifyCopies({ olderThanMs: 0 }).catch((err) => console.error('[repair] copy check failed', { error: err instanceof Error ? err.name : 'error' }))
-    for await (const file of filesMissingCopy()) {
+    const required = await getCopiesPerFile()
+    for await (const file of filesMissingCopy(required)) {
       let result: Awaited<ReturnType<typeof repairOne>>
       try {
-        result = await repairOne(file)
+        result = await repairOne(file, required)
       } catch (err) {
         console.error('[repair] file failed', { fileId: file.id, error: err instanceof Error ? err.name : 'error' })
         result = 'failed'

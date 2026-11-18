@@ -232,7 +232,7 @@ function refreshQuotasInBackground(copies: Copy[]) {
 }
 
 function assertWritable(session: LoadedSession) {
-  if (session.status !== 'uploading' || !session.fileId || !session.wrappedFileKey || session.replicas.length !== 2) {
+  if (session.status !== 'uploading' || !session.fileId || !session.wrappedFileKey || session.replicas.length < 1) {
     throw new UploadError(409, 'UPLOAD_NOT_ACTIVE', 'This upload is no longer active.')
   }
 }
@@ -259,7 +259,8 @@ async function writeLocked(sessionId: string, plainOffset: bigint, plaintext: Bu
   await prisma.uploadSession.updateMany({ where: { id: sessionId, status: 'uploading' }, data: { lastActivityAt: new Date() } })
 
   const copies = await loadCopies(session)
-  if (copies.length !== 2) {
+  // Every copy reserved at the start must still be writable; one or two, by the setting at that time.
+  if (copies.length !== session.replicas.length) {
     await failLocked(sessionId, 'Storage account removed during upload.')
     throw accountUnavailable()
   }
@@ -303,9 +304,9 @@ export function resumeOffset(sessionId: string): Promise<bigint> {
     const session = await loadSession(sessionId)
     if (!session) throw new UploadError(404, 'UPLOAD_SESSION_NOT_FOUND', 'Upload session not found.')
     if (session.status === 'completed') return session.sizeBytes
-    if (session.status !== 'uploading' || session.replicas.length !== 2) return 0n
+    if (session.status !== 'uploading' || session.replicas.length < 1) return 0n
     const copies = await loadCopies(session)
-    if (copies.length !== 2) throw accountUnavailable()
+    if (copies.length !== session.replicas.length) throw accountUnavailable()
 
     const total = encryptedSize(session.sizeBytes)
     const probes = await Promise.allSettled(copies.map((copy) => committedFor(copy, total, false)))

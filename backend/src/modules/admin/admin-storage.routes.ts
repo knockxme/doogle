@@ -4,7 +4,7 @@ import { prisma } from '../../config/prisma.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { requireAuth } from '../../middleware/auth.middleware.js'
 import { countFilesMissingCopy, RepairError, startRepair } from './repair.js'
-import { loadCandidates } from '../storage/pool.js'
+import { getCopiesPerFile, loadCandidates } from '../storage/pool.js'
 import { effectiveFree } from '../storage/pool-select.js'
 
 export const adminStorageRouter = Router()
@@ -68,6 +68,7 @@ adminStorageRouter.patch('/accounts/:id', async (req, res, next) => {
 async function readSettings() {
   const s = await prisma.appSetting.upsert({ where: { id: 1 }, create: { id: 1, priorityAccountIds: [] }, update: {} })
   return {
+    copiesPerFile: s.copiesPerFile === 1 ? 1 : 2,
     defaultAccountCapBytes: str(s.defaultAccountCapBytes),
     routingMode: s.routingMode,
     priorityAccountIds: Array.isArray(s.priorityAccountIds) ? s.priorityAccountIds.filter((v): v is string => typeof v === 'string') : [],
@@ -88,10 +89,13 @@ adminStorageRouter.patch('/settings', async (req, res, next) => {
       defaultAccountCapBytes: bytesOrNull.optional(),
       routingMode: z.enum(routingModes).optional(),
       priorityAccountIds: z.array(z.string().min(1)).max(100).optional(),
+      // 2 = keep a second copy of every new file on another account; 1 = one copy, all free space usable.
+      copiesPerFile: z.union([z.literal(1), z.literal(2)]).optional(),
     }).parse(req.body)
     await readSettings()
     const data: Record<string, unknown> = {}
     if (body.defaultAccountCapBytes !== undefined) data.defaultAccountCapBytes = body.defaultAccountCapBytes
+    if (body.copiesPerFile !== undefined) data.copiesPerFile = body.copiesPerFile
     if (body.routingMode !== undefined) {
       data.routingMode = body.routingMode
       if (body.routingMode !== 'round_robin') data.roundRobinCursor = 0
@@ -133,11 +137,12 @@ function repairJobJson(job: { id: string; status: string; processed: number; fai
 
 adminStorageRouter.get('/health', async (_req, res, next) => {
   try {
-    const [accounts, counts, candidates, filesMissingCopy] = await Promise.all([
+    const [accounts, counts, candidates, filesMissingCopy, copiesPerFile] = await Promise.all([
       prisma.connectedAccount.findMany({ select: { id: true, email: true, status: true, lastError: true }, orderBy: { createdAt: 'asc' } }),
       prisma.fileReplica.groupBy({ by: ['connectedAccountId', 'status'], _count: { _all: true } }),
       loadCandidates(),
       countFilesMissingCopy(),
+      getCopiesPerFile(),
     ])
     const free = new Map(candidates.map((c) => [c.id, effectiveFree(c)]))
     const count = (id: string, status: string) => counts.find((c) => c.connectedAccountId === id && c.status === status)?._count._all ?? 0
@@ -147,6 +152,7 @@ adminStorageRouter.get('/health', async (_req, res, next) => {
         return { id: a.id, email: a.email, status: a.status, lastError: a.lastError, healthyCopies: count(a.id, 'healthy'), lostCopies: count(a.id, 'lost'), full: f !== undefined && f !== null && f <= 0n }
       }),
       filesMissingCopy,
+      copiesPerFile,
     })
   } catch (error) {
     return next(error)

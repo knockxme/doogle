@@ -343,6 +343,7 @@ model AppSetting {
   routingMode           String   @default("most_available") @map("routing_mode") @db.VarChar(32)
   priorityAccountIds    Json     @map("priority_account_ids")
   roundRobinCursor      Int      @default(0) @map("round_robin_cursor")
+  copiesPerFile         Int      @default(2) @map("copies_per_file")
   createdAt             DateTime @default(now()) @map("created_at")
   updatedAt             DateTime @updatedAt @map("updated_at")
 
