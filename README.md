@@ -15,14 +15,15 @@ Based on [9Drive](https://9drive.zenhosta.com) by Zenhosta, licensed under Apach
 5. [Google Cloud setup](#google-cloud-setup)
 6. [Put it on the internet](#put-it-on-the-internet)
 7. [Day-to-day admin](#day-to-day-admin)
-8. [Backups and restore](#backups-and-restore)
-9. [The master key](#the-master-key)
-10. [Settings reference](#settings-reference)
-11. [Troubleshooting](#troubleshooting)
-12. [Known limits and open issues](#known-limits-and-open-issues)
-13. [Owner's first check](#owners-first-check)
-14. [Install without Docker](#install-without-docker)
-15. [Development](#development)
+8. [Media library over WebDAV (rclone, Jellyfin)](#media-library-over-webdav-rclone-jellyfin)
+9. [Backups and restore](#backups-and-restore)
+10. [The master key](#the-master-key)
+11. [Settings reference](#settings-reference)
+12. [Troubleshooting](#troubleshooting)
+13. [Known limits and open issues](#known-limits-and-open-issues)
+14. [Owner's first check](#owners-first-check)
+15. [Install without Docker](#install-without-docker)
+16. [Development](#development)
 
 ---
 
@@ -125,7 +126,7 @@ Things to know:
 The app container serves the website and forwards everything under `/api/` to the backend. So only **one** address needs to be public:
 
 1. Put an HTTPS reverse proxy (Caddy, nginx, Traefik...) in front of port **5173** only. The backend port 4000 stays bound to `127.0.0.1` and must not be public.
-2. In `.env`, set `FRONTEND_URL=https://your-domain`. Leave `VITE_API_URL` at its default: the app then talks to `https://your-domain/api`.
+2. In `.env`, set `FRONTEND_URL=https://your-domain` and `TRUST_PROXY_HOPS=2` (your proxy plus the app's own). Without it, every sign-in looks like it comes from your proxy and the sign-in limits hit everyone at once. Leave `VITE_API_URL` at its default: the app then talks to `https://your-domain/api`.
 3. Use `https://your-domain/api/connected-accounts/google/callback` as the Google redirect URI, both in Google Cloud and in **Admin > Storage**.
 4. Rebuild: `docker compose up -d --build`.
 
@@ -154,6 +155,51 @@ All file bytes pass through your server, so its internet speed limits playback a
 - **Unhealthy account:** reconnect it (same button as connecting). For S3, enter the bucket details again.
 
 **Family members** can share a file with a public link (it can expire), upload with API keys (**API Keys** page), use trash, and see their activity.
+
+## Media library over WebDAV (rclone, Jellyfin)
+
+WebDAV lets other programs use Family Drive like a normal folder. The main use: **rclone** on a Raspberry Pi (or any machine) mounts one user's files at, say, `/media/library`, and Jellyfin, Sonarr and Radarr read, write, rename and delete there as on a local disk. Files are still encrypted and stored twice; renames cost nothing on Google's side.
+
+```
+Jellyfin / Sonarr / Radarr  ->  /media/library (rclone mount)  ->  https://your-domain/api/dav  ->  two copies on Google/S3
+```
+
+**Set it up**
+
+1. **Admin > Users > Add user**, for example `media@family.local`. Give it a storage limit for the media library (with two copies, a pool of about 1 TB holds about 450 GB).
+2. On that user's row, press **WebDAV on**. Only users switched on by an admin can use WebDAV. **WebDAV off** revokes their WebDAV keys at once.
+3. Sign in as that user, open **API Keys**, create a key and choose **WebDAV**. Copy the key; it is shown once.
+4. In the web app as that user, create the folders you want (`tv`, `movies`...), or let rclone create them.
+5. On the Pi, configure rclone (the API Keys page shows this with your address):
+
+```ini
+[familydrive]
+type = webdav
+url = https://your-domain/api/dav
+vendor = owncloud
+user = media@family.local
+pass = <output of: rclone obscure YOUR_WEBDAV_KEY>
+```
+
+```bash
+rclone mount familydrive: /media/library \
+  --vfs-cache-mode full --vfs-cache-max-size 100G --vfs-cache-max-age 72h \
+  --vfs-read-chunk-size 16M --buffer-size 32M --dir-cache-time 1m \
+  --vfs-write-back 30s --transfers 2 --allow-other
+```
+
+**Good to know**
+
+- **Deleting over WebDAV is permanent.** Files do not go to the trash; the space is free at once.
+- Sign-in is your email plus the WebDAV key. A normal upload key does not work for WebDAV, and a WebDAV key can read, change and delete everything that user owns. Keep it on the Pi only.
+- Use it only over HTTPS, or limit it to your home network and Tailscale with the `allow`/`deny` lines in `frontend/nginx.conf` (block `location /api/dav`).
+- **rclone keeps decrypted copies on the Pi's disk** (`--vfs-cache-mode full`). The server never stores plain files, but the Pi does. Use an encrypted disk if that matters to you.
+- Movies over 5 GB: raise `MAX_UPLOAD_BYTES` in `.env` (for example `21474836480` for 20 GB) and run `docker compose up -d`.
+- Upload speed is about half your internet upload speed (two copies). Google allows about 750 GB of uploads per account per day; a big first import pauses accounts for 24 hours, so copy it in batches.
+- After 10 wrong keys from one address in 15 minutes, WebDAV refuses that address for a while.
+- Test it: `./scripts/dav-smoke-test.sh https://your-domain/api/dav media@family.local <key>` checks every WebDAV action in a `_smoke_test` folder. `./scripts/rclone-test.sh` does the same with rclone.
+- File names are case-sensitive over WebDAV (`Show.mkv` and `show.mkv` are different). If the web app has two files with the same name in a folder, WebDAV shows only the newest; a folder wins over a file.
+- Windows Explorer and macOS Finder cannot mount it read-write (they need WebDAV locks). Use rclone.
 
 ## Backups and restore
 
@@ -211,8 +257,10 @@ These go in the root `.env` for Docker (or `backend/.env` without Docker).
 | `VITE_API_URL` | Leave at the default. Change only if the backend has its own public address. Needs a rebuild. |
 | `ACCESS_TOKEN_TTL_SECONDS`, `REFRESH_TOKEN_TTL_DAYS` | How long a sign-in lasts (default 1 hour, renewed for 30 days). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Google OAuth client, copied into the database at first start only. |
-
-The maximum upload size is 5 GB (`MAX_UPLOAD_BYTES` in `docker-compose.yml`).
+| `MAX_UPLOAD_BYTES` | Largest single file, in bytes. Default 5 GB. |
+| `TRUST_PROXY_HOPS` | How many proxies sit in front of the backend: `1` = only the app container (default), `2` = with your own HTTPS proxy. |
+| `DAV_ENABLED` | `true` (default) turns on WebDAV at `/api/dav`. Users still need an admin to switch them on. |
+| `DAV_CACHE_MB`, `DAV_READ_AHEAD` | RAM for decrypted pieces while files are read over WebDAV (default 256 MB), and how many 8 MB pieces to read ahead (default 2). |
 
 ## Troubleshooting
 
@@ -234,10 +282,9 @@ The maximum upload size is 5 GB (`MAX_UPLOAD_BYTES` in `docker-compose.yml`).
 - Office files (Word, Excel...) have no preview. Images, video, audio and PDF do.
 - One backend process only.
 - Real Google and S3 behaviour has not been tested against live accounts yet. The tests use fakes. Do the [owner's first check](#owners-first-check) before trusting real files to it.
-- An upload that is abandoned (tab closed, never retried) keeps its reserved space, and counts against that person's limit, for up to 7 days. On S3, its unfinished parts stay in the bucket until removed with an S3 lifecycle rule ("abort incomplete multipart uploads").
+- An upload that stops (tab closed, connection lost) keeps its reserved space for up to a day. Then the hourly cleanup cancels it and deletes its partial copies.
 - There is no button to cancel an upload while it runs.
 - An account marked **Unhealthy** stays out until you reconnect it, even if the problem was brief.
-- If your HTTPS proxy sits in front of the app container, the app sees every sign-in as coming from the proxy. The sign-in limit (5 wrong passwords per email per 15 minutes) then applies to everyone signing in with that email.
 - PDF preview has not yet been checked in Chrome with the app's strict file security header. Download always works.
 
 ## Owner's first check
