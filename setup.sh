@@ -51,9 +51,9 @@ if ! has_master_key; then
 fi
 
 if [ ! -f "$backend_dir/.env" ]; then
-  printf "MySQL DATABASE_URL [mysql://root@localhost:3306/9drive]: "
+  printf "MySQL DATABASE_URL [mysql://root@localhost:3306/doogle]: "
   IFS= read -r database_url
-  database_url=${database_url:-mysql://root@localhost:3306/9drive}
+  database_url=${database_url:-mysql://root@localhost:3306/doogle}
 
   {
     printf 'DATABASE_URL="%s"\n' "$database_url"

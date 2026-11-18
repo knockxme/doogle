@@ -50,9 +50,9 @@ if (-not $hasKey) {
 }
 
 if (-not (Test-Path -LiteralPath $backendEnv)) {
-    $databaseUrl = Read-Host "MySQL DATABASE_URL [mysql://root@localhost:3306/9drive]"
+    $databaseUrl = Read-Host "MySQL DATABASE_URL [mysql://root@localhost:3306/doogle]"
     if ([string]::IsNullOrWhiteSpace($databaseUrl)) {
-        $databaseUrl = "mysql://root@localhost:3306/9drive"
+        $databaseUrl = "mysql://root@localhost:3306/doogle"
     }
 
     @(

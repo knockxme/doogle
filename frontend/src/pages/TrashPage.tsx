@@ -69,7 +69,7 @@ export function TrashPage() {
       })
       setMessage(`Successfully restored ${ids.length} file(s).`)
       setMessageType('success')
-      window.dispatchEvent(new Event('9drive:storage-changed'))
+      window.dispatchEvent(new Event('doogle:storage-changed'))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to restore files')
       setMessageType('error')
@@ -96,7 +96,7 @@ export function TrashPage() {
       })
       setMessage(`Permanently deleted ${ids.length} file(s).`)
       setMessageType('success')
-      window.dispatchEvent(new Event('9drive:storage-changed'))
+      window.dispatchEvent(new Event('doogle:storage-changed'))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to permanently delete files')
       setMessageType('error')

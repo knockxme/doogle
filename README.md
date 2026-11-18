@@ -1,6 +1,6 @@
-# Family Drive
+# Doogle
 
-A private file drive for one family. You (the admin) create every account; nobody can sign up on their own. Every file is encrypted on your server and saved **twice**, on two different storage accounts (Gmail/Google Drive accounts or S3 buckets). Google and S3 only ever see scrambled files with random names.
+A private file drive for one family. You (the admin) create every account; nobody can sign up on their own. Every file is encrypted on your server and saved **twice**, on two different storage accounts (Gmail/Google Drive accounts or S3 buckets). You can turn the second copy off to use all the free space instead. Google and S3 only ever see scrambled files with random names.
 
 Based on [9Drive](https://9drive.zenhosta.com) by Zenhosta, licensed under Apache 2.0 (see `LICENSE`).
 
@@ -38,7 +38,7 @@ Based on [9Drive](https://9drive.zenhosta.com) by Zenhosta, licensed under Apach
  Browser ◀─play/download── Your server ◀─decrypt── copy 1 (or copy 2 if copy 1 fails)
 ```
 
-- **Upload:** the browser sends the file in 8 MB pieces. The server encrypts each piece and writes it to two different storage accounts at the same time. Nothing is saved on the server's disk. The upload counts as done only when both copies are complete.
+- **Upload:** the browser sends the file in 8 MB pieces. The server encrypts each piece and writes it to two different storage accounts at the same time (one, if the second copy is turned off). Nothing is saved on the server's disk. The upload counts as done only when every copy is complete.
 - **Download and playback:** the server reads the encrypted copy, decrypts it on the fly and sends it to the browser. Video seeking works. If one copy cannot be read, the server switches to the other one.
 - **The database** (MySQL) is the map. It knows which random blob belongs to which file, and it holds each file's (wrapped) key. Without the database, the blobs in Google are useless.
 - **The master key** (`FILE_MASTER_KEY`) unlocks every file key. Without it, nothing can be decrypted.
@@ -50,7 +50,8 @@ So the three things that matter are: **the master key, the database, and at leas
 | Word | Meaning |
 | --- | --- |
 | Storage account | One connected Gmail/Google Drive account, or one S3 bucket. Files are stored there as encrypted blobs. |
-| Copy | One encrypted blob of a file on one storage account. Every file has two copies on two different accounts. |
+| Copy | One encrypted blob of a file on one storage account. Every file has two copies on two different accounts, unless the second copy is turned off. |
+| Second copy | The admin switch (Admin > Storage) that decides whether new files are stored twice (on, the default) or once (off). |
 | Lost copy | A copy the app could not find any more (for example, someone deleted it in Google Drive). |
 | Unhealthy account | An account that refused access (password changed, access revoked, bucket deleted). It is skipped until you reconnect it. |
 | Cap | A size limit you set per storage account. It counts encrypted bytes this app stored there. |
@@ -81,7 +82,7 @@ cp .env.docker.example .env
 
 **2. Fill in the secrets.** Open `.env` and replace the example values:
 
-- `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`: any strong passwords.
+- `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`: run `openssl rand -hex 24` for each. Use **only letters and numbers**: a password with `/ : @ # ? %` or `$` breaks the database address and the backend keeps restarting.
 - `JWT_ACCESS_SECRET` and `TOKEN_ENCRYPTION_KEY`: run `openssl rand -hex 32` once for each and paste the results. Set `TOKEN_ENCRYPTION_KEY` now: changing it later means reconnecting every storage account. (The backend prints a warning at start if either is still the example value.)
 - `FILE_MASTER_KEY`: run `openssl rand -base64 32` and paste the result. **Copy it somewhere safe and offline right now** (see [The master key](#the-master-key)). Docker refuses to start without it.
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`: from [Google Cloud setup](#google-cloud-setup). You can also leave them and enter them later in **Admin > Storage**.
@@ -100,7 +101,7 @@ docker compose exec backend npm run admin:create -- --email you@example.com --na
 
 **5. Sign in** at http://localhost:5173.
 
-**6. Connect storage.** Open **Admin > Storage** and connect **at least two** accounts (two Gmail accounts, or Gmail plus an S3 bucket). With fewer than two, uploads are refused.
+**6. Connect storage.** Open **Admin > Storage** and connect **at least two** accounts (two Gmail accounts, or Gmail plus an S3 bucket). With fewer than two, uploads are refused, unless you turn the second copy off (then one account is enough).
 
 **7. Add your family.** Open **Admin > Users > Add user**. Give each person a temporary password; they must choose their own at first sign-in.
 
@@ -149,12 +150,13 @@ All file bytes pass through your server, so its internet speed limits playback a
 
 **Storage** (**Admin > Storage**)
 - **Connect Google / Connect S3:** add a storage account. Reconnecting the same Gmail account or bucket updates it instead of adding a duplicate.
+- **Second copy (on / off):** on (the default) stores every new file on two different accounts, so losing an account loses nothing, but each file uses twice its size. Off stores new files once, so all free space can be used; if an account is then lost, the files stored only there are gone. Files keep the copies they already have. After turning it back on, press **Repair** to add a second copy to files stored only once.
 - **Default cap for new accounts:** applies only to accounts connected afterwards. Each account's own cap can be changed in the table.
 - **Routing** decides which two accounts get a new file:
   - *Most available space:* the two with the most room.
   - *Round robin:* takes turns.
   - *Priority order:* the first two in your list that have room.
-- **Health** shows how many files have fewer than two good copies, and each account's status.
+- **Health** shows how many files have fewer good copies than the second-copy setting asks for, and each account's status.
 - **Copy check:** every hour the app checks a batch of copies to make sure they still exist, so each copy is looked at about once a week. A copy deleted behind the app's back (for example in Google Drive) shows up in Health as a lost copy even if nobody opens that file.
 - **Repair** first checks that every copy still exists (on a big library this takes a few minutes before the progress moves), then copies the encrypted bytes of every file with a missing copy onto another account. Run it after an account is lost, or after adding a new one. It runs in the background and resumes after a restart. Playback keeps working from the surviving copy meanwhile.
 - **Remove:** takes an account out of the app. It is refused while any file's only good copy is on it (run Repair onto another account first). The blobs stay in that Google Drive or bucket; delete them there by hand if you want.
@@ -164,7 +166,7 @@ All file bytes pass through your server, so its internet speed limits playback a
 
 ## Media library over WebDAV (rclone, Jellyfin)
 
-WebDAV lets other programs use Family Drive like a normal folder. The main use: **rclone** on a Raspberry Pi (or any machine) mounts one user's files at, say, `/media/library`, and Jellyfin, Sonarr and Radarr read, write, rename and delete there as on a local disk. Files are still encrypted and stored twice; renames cost nothing on Google's side.
+WebDAV lets other programs use Doogle like a normal folder. The main use: **rclone** on a Raspberry Pi (or any machine) mounts one user's files at, say, `/media/library`, and Jellyfin, Sonarr and Radarr read, write, rename and delete there as on a local disk. Files are still encrypted and stored twice; renames cost nothing on Google's side.
 
 ```
 Jellyfin / Sonarr / Radarr  ->  /media/library (rclone mount)  ->  https://your-domain/api/dav  ->  two copies on Google/S3
@@ -227,11 +229,11 @@ docker compose cp backup:/backups/. ./backups-copy/
 docker compose stop backend
 docker compose exec -T backup sh -c 'ls /backups'          # pick a file
 docker compose exec -T backup sh -c 'gunzip -c /backups/backup-YYYYMMDDTHHMMSSZ.sql.gz' \
-  | docker compose exec -T mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" 9drive'
+  | docker compose exec -T mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" doogle'
 docker compose start backend
 ```
 
-If you changed `MYSQL_DATABASE`, use that name instead of `9drive`.
+If you changed `MYSQL_DATABASE`, use that name instead of `doogle`.
 
 On a new server, with a dump you copied off the old one:
 
@@ -239,7 +241,7 @@ On a new server, with a dump you copied off the old one:
 # .env must already hold the same FILE_MASTER_KEY as the old server
 docker compose up -d mysql
 gunzip -c ./backups-copy/backup-YYYYMMDDTHHMMSSZ.sql.gz \
-  | docker compose exec -T mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" 9drive'
+  | docker compose exec -T mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" doogle'
 docker compose up -d --build
 ```
 
@@ -252,6 +254,8 @@ docker compose up -d --build
 ```
 
 Database changes are applied automatically when the backend starts. Check `docker compose logs backend` for `Backend running`. Your `.env`, the database and the backups are kept.
+
+The app used to be called 9Drive. If your `.env` says `MYSQL_DATABASE=9drive` or `MYSQL_USER=9drive`, keep those lines: they are your existing database. New installs use `doogle`.
 
 ## The master key
 
@@ -294,6 +298,7 @@ These go in the root `.env` for Docker (or `backend/.env` without Docker).
 | rclone says 401 | The user needs **WebDAV on** in Admin > Users, the key must be a **WebDAV** key (not upload-only), and the rclone `user` must be that user's email. |
 | rclone says 429 | Too many wrong keys from that address. Wait 15 minutes, then fix the key. |
 | Sign-ins get "too many attempts" for everyone | You have an HTTPS proxy in front: set `TRUST_PROXY_HOPS=2` and run `docker compose up -d`. |
+| Backend keeps restarting with `P1013 ... empty host in database URL` | `MYSQL_PASSWORD` or `MYSQL_USER` contains a character like `/ : @ # ?`. Use letters and numbers only (`openssl rand -hex 24`). If nothing is stored yet, recreate the database with `docker compose down -v` and `docker compose up -d --build` (this deletes the database). |
 | Logs | `docker compose logs -f backend` |
 
 ## What has been tested
@@ -318,7 +323,7 @@ Do this once with two real Gmail accounts before storing real files:
 
 1. Connect both accounts in **Admin > Storage**.
 2. Upload an mp4.
-3. Open each Google Drive: you should see only a `9drive` folder with a `.bin` file, no preview and no sharing.
+3. Open each Google Drive: you should see only a `Doogle` folder with a `.bin` file, no preview and no sharing.
 4. Play the video in the app and jump around in it.
 5. Revoke the app's access on one Gmail account (Google Account > Security > Third-party access). Playback must keep working.
 6. Connect a third account and press **Repair**. Health should go back to 0 files missing a copy.

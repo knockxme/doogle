@@ -22,7 +22,7 @@ user = ${email}
 pass = <output of: rclone obscure YOUR_WEBDAV_KEY>`
 
 const curlExample = `curl -X POST "${UPLOAD_ENDPOINT}" \\
-  -H "Authorization: Bearer 9d_live_xxx" \\
+  -H "Authorization: Bearer dg_live_xxx" \\
   -F 'filesMeta=[{"fieldName":"file-0","fileName":"hello.txt","mimeType":"text/plain","sizeBytes":"12"}]' \\
   -F "file-0=@hello.txt;type=text/plain"`
 
@@ -34,7 +34,7 @@ form.append('file-0', file)
 
 await fetch('${UPLOAD_ENDPOINT}', {
   method: 'POST',
-  headers: { Authorization: 'Bearer 9d_live_xxx' },
+  headers: { Authorization: 'Bearer dg_live_xxx' },
   body: form,
 })`
 
@@ -127,7 +127,7 @@ export function ApiManagementPage() {
           <div><h2 className="text-lg font-extrabold">Upload API Docs</h2><p className="mt-1 text-sm text-slate-500">Multipart upload uses the same storage routing as dashboard uploads.</p></div>
           <div className="mt-4 grid gap-4 text-sm text-slate-600">
             <div className="min-w-0"><div className="mb-2 flex items-center justify-between gap-3"><p className="font-bold text-slate-950">Endpoint</p><Button variant="outline" size="sm" onClick={() => copy(UPLOAD_ENDPOINT)}><Clipboard className="h-4 w-4" />Copy</Button></div><code className="block min-w-0 max-w-full overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-950 sm:text-sm">POST {UPLOAD_ENDPOINT}</code></div>
-            <div className="min-w-0"><p className="font-bold text-slate-950">Auth Header</p><code className="mt-2 block min-w-0 max-w-full overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-950 sm:text-sm">Authorization: Bearer 9d_live_xxx</code></div>
+            <div className="min-w-0"><p className="font-bold text-slate-950">Auth Header</p><code className="mt-2 block min-w-0 max-w-full overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-950 sm:text-sm">Authorization: Bearer dg_live_xxx</code></div>
             <div className="min-w-0"><div className="mb-2 flex items-center justify-between gap-3"><p className="font-bold text-slate-950">cURL</p><Button variant="outline" size="sm" onClick={() => copy(curlExample)}><Clipboard className="h-4 w-4" />Copy</Button></div><pre className="max-h-72 max-w-full overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-relaxed text-white">{curlExample}</pre></div>
             <div className="min-w-0"><div className="mb-2 flex items-center justify-between gap-3"><p className="font-bold text-slate-950">JavaScript</p><Button variant="outline" size="sm" onClick={() => copy(jsExample)}><Clipboard className="h-4 w-4" />Copy</Button></div><pre className="max-h-72 max-w-full overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-relaxed text-white">{jsExample}</pre></div>
           </div>

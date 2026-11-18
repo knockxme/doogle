@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Family Drive is a closed, admin-managed file drive (built from 9Drive, Apache 2.0). Admins create users; there is no public sign-up. The backend encrypts every file in 1 MiB frames with a per-file key wrapped by `FILE_MASTER_KEY`, and stores two copies (replicas) on two different connected accounts (Google Drive with `drive.file`, or S3). Providers only ever see encrypted blobs named `<32 hex>.bin` with MIME `application/octet-stream`.
+Doogle is a closed, admin-managed file drive (built from 9Drive, Apache 2.0). Admins create users; there is no public sign-up. The backend encrypts every file in 1 MiB frames with a per-file key wrapped by `FILE_MASTER_KEY`, and stores two copies (replicas) on two different connected accounts (Google Drive with `drive.file`, or S3). `AppSetting.copiesPerFile` (admin "Second copy" switch, 1 or 2) decides how many copies new files get; `pickAccounts`, `usablePoolBytes` and Repair follow it. Providers only ever see encrypted blobs named `<32 hex>.bin` with MIME `application/octet-stream`.
 
 ## Repository Structure
 

@@ -7,9 +7,9 @@ export type AuthUser = {
   mustChangePassword?: boolean
 }
 
-const ACCESS_TOKEN_KEY = '9drive.accessToken'
-const REFRESH_TOKEN_KEY = '9drive.refreshToken'
-const USER_KEY = '9drive.user'
+const ACCESS_TOKEN_KEY = 'doogle.accessToken'
+const REFRESH_TOKEN_KEY = 'doogle.refreshToken'
+const USER_KEY = 'doogle.user'
 
 export function getAccessToken() {
   return localStorage.getItem(ACCESS_TOKEN_KEY)

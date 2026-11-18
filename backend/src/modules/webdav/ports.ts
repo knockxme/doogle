@@ -1,5 +1,5 @@
 /**
- * The contract between the WebDAV layer and Family Drive. The WebDAV code never touches MySQL,
+ * The contract between the WebDAV layer and Doogle. The WebDAV code never touches MySQL,
  * providers or encryption directly; family-ports.ts implements these with the existing services.
  */
 

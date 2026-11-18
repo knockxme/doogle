@@ -224,8 +224,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     setUploadProgress((current) => current.status === 'uploading' && current.files.every((f) => f.status === 'done') ? { ...current, status: 'done', percent: 100 } : current)
 
     // Dispatch global events so active pages reload their data
-    window.dispatchEvent(new Event('9drive:storage-changed'))
-    window.dispatchEvent(new Event('9drive:upload-completed'))
+    window.dispatchEvent(new Event('doogle:storage-changed'))
+    window.dispatchEvent(new Event('doogle:upload-completed'))
   }
 
   async function retryFailedUpload(fileName: string) {
@@ -260,8 +260,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         })
       }, session.sessionId)
 
-      window.dispatchEvent(new Event('9drive:storage-changed'))
-      window.dispatchEvent(new Event('9drive:upload-completed'))
+      window.dispatchEvent(new Event('doogle:storage-changed'))
+      window.dispatchEvent(new Event('doogle:upload-completed'))
     } catch (err) {
       console.error('Retry upload failed:', fileName, err)
       const message = failureFrom(err).message

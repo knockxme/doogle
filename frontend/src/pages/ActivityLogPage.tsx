@@ -141,7 +141,7 @@ export function ActivityLogPage() {
     <>
       <PageHeader
         title="Activity Log"
-        description={showAll ? 'Action types and who did them across the drive. File names are never shown here.' : 'View audit trails and file activities in your 9Drive workspace.'}
+        description={showAll ? 'Action types and who did them across the drive. File names are never shown here.' : 'View audit trails and file activities in your Doogle workspace.'}
         actions={admin ? <Button variant="outline" onClick={() => setShowAll(!showAll)}>{showAll ? 'Show my activity' : 'Show all users'}</Button> : undefined}
       />
 

@@ -4,8 +4,8 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-9drive}
-      MYSQL_USER: ${MYSQL_USER:-9drive}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-doogle}
+      MYSQL_USER: ${MYSQL_USER:-doogle}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-this-database-password}
     volumes:
       - mysql_data:/var/lib/mysql
@@ -23,7 +23,7 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-9drive}:${MYSQL_PASSWORD:-change-this-database-password}@mysql:3306/${MYSQL_DATABASE:-9drive}
+      DATABASE_URL: mysql://${MYSQL_USER:-doogle}:${MYSQL_PASSWORD:-change-this-database-password}@mysql:3306/${MYSQL_DATABASE:-doogle}
       APP_PORT: 4000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-this-jwt-secret-at-least-32-chars}
@@ -50,7 +50,7 @@ services:
         condition: service_healthy
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-9drive}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-doogle}
     volumes:
       - backups:/backups
       - ./scripts/mysql-backup.sh:/usr/local/bin/mysql-backup.sh:ro

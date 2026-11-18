@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks every WebDAV method Family Drive must support, with plain curl.
+# Checks every WebDAV method Doogle must support, with plain curl.
 #
 #   ./scripts/dav-smoke-test.sh http://127.0.0.1:4100/api/dav media@example.com devkey
 #   ./scripts/dav-smoke-test.sh https://drive.example.com/api/dav media@family you-api-key
@@ -22,7 +22,7 @@ check() { # check <name> <expected-status> <actual-status>
 }
 code() { curl -s -o "$TMP/out" -w '%{http_code}' "$@"; }
 
-echo "== Family Drive WebDAV smoke test: $BASE"
+echo "== Doogle WebDAV smoke test: $BASE"
 
 check "OPTIONS"                 200 "$(code -X OPTIONS "$BASE/")"
 check "no auth → 401"           401 "$(code -X PROPFIND -H 'Depth: 0' "$BASE/")"

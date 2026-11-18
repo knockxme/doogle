@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'pwa-192x192.svg', 'pwa-512x512.svg', 'maskable-icon.svg'],
       manifest: {
-        name: '9Drive',
-        short_name: '9Drive',
+        name: 'Doogle',
+        short_name: 'Doogle',
         description: 'Private family drive with encrypted, mirrored storage.',
         theme_color: '#2563eb',
         background_color: '#ffffff',

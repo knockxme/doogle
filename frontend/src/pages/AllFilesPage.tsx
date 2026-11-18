@@ -34,7 +34,7 @@ const sizeActiveClasses: Record<FolderSizeScale, string> = {
 
 type FileViewMode = 'list' | 'grid'
 
-const fileViewStorageKey = '9drive:all-files-view-mode'
+const fileViewStorageKey = 'doogle:all-files-view-mode'
 
 function getStoredFileViewMode(): FileViewMode {
   const stored = localStorage.getItem(fileViewStorageKey)
@@ -121,14 +121,14 @@ export function AllFilesPage() {
   const [inviting, setInviting] = useState(false)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
   const [folderSizeScale, setFolderSizeScale] = useState<FolderSizeScale>(() => {
-    const v = localStorage.getItem('9drive:folder-size')
+    const v = localStorage.getItem('doogle:folder-size')
     return (v === 'xs' || v === 'sm' || v === 'md' || v === 'lg') ? v : 'md'
   })
   const { setHeaderActions } = useDriveLayoutActions()
 
   function changeFolderSize(scale: FolderSizeScale) {
     setFolderSizeScale(scale)
-    localStorage.setItem('9drive:folder-size', scale)
+    localStorage.setItem('doogle:folder-size', scale)
   }
 
   async function loadFiles() {
@@ -217,10 +217,10 @@ export function AllFilesPage() {
     }
 
     window.addEventListener('keydown', onKey)
-    window.addEventListener('9drive:open-move-modal', onOpenMoveShortcut)
+    window.addEventListener('doogle:open-move-modal', onOpenMoveShortcut)
     return () => {
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('9drive:open-move-modal', onOpenMoveShortcut)
+      window.removeEventListener('doogle:open-move-modal', onOpenMoveShortcut)
     }
   }, [activeFolderForMenu, cutFolder, activeFolderId])
 
@@ -402,7 +402,7 @@ export function AllFilesPage() {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = '9drive-download.zip'
+      link.download = 'doogle-download.zip'
       link.click()
       URL.revokeObjectURL(url)
       clearSelection()
@@ -443,7 +443,7 @@ export function AllFilesPage() {
     setDeleteOpen(false)
     clearSelection()
     await loadFiles()
-    window.dispatchEvent(new Event('9drive:storage-changed'))
+    window.dispatchEvent(new Event('doogle:storage-changed'))
   }
 
   async function shareFile() {
@@ -504,7 +504,7 @@ export function AllFilesPage() {
       setInviteEmail('')
       setInviteRole('viewer')
       setInviteMessage('Invite saved. Member will appear in Shared.')
-      window.dispatchEvent(new Event('9drive:invites-changed'))
+      window.dispatchEvent(new Event('doogle:invites-changed'))
     } catch (error) {
       setInviteMessage(error instanceof Error ? error.message : 'Failed to send invite')
     } finally {
@@ -559,8 +559,8 @@ export function AllFilesPage() {
     function handleUploadCompleted() {
       loadAll().catch(() => undefined)
     }
-    window.addEventListener('9drive:upload-completed', handleUploadCompleted)
-    return () => window.removeEventListener('9drive:upload-completed', handleUploadCompleted)
+    window.addEventListener('doogle:upload-completed', handleUploadCompleted)
+    return () => window.removeEventListener('doogle:upload-completed', handleUploadCompleted)
   }, [activeFolderId])
 
   useEffect(() => {
@@ -693,7 +693,7 @@ export function AllFilesPage() {
       <DummyModal open={shareOpen} title="Share Link" description={activeFile?.name ?? ''} onClose={() => setShareOpen(false)}>
         <div className="grid gap-4">
           <div>
-            <label className="text-xs font-bold text-slate-500 block mb-1">9Drive Public Share Link (no login required)</label>
+            <label className="text-xs font-bold text-slate-500 block mb-1">Doogle Public Share Link (no login required)</label>
             <Input value={shareUrl} readOnly />
           </div>
           <div className="flex justify-end gap-3">

@@ -49,7 +49,7 @@ apiKeyRouter.post('/', async (req: AuthRequest, res, next) => {
       const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, select: { davEnabled: true } })
       if (!user.davEnabled) return res.status(403).json({ code: 'DAV_NOT_ALLOWED', message: 'An admin has not turned on WebDAV for this account.' })
     }
-    const secret = `9d_live_${randomToken(32)}`
+    const secret = `dg_live_${randomToken(32)}`
     const apiKey = await prisma.apiKey.create({
       data: {
         userId: req.user!.id,

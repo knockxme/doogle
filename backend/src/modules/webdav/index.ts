@@ -73,7 +73,7 @@ function sendError(res: ServerResponse, err: unknown, method: string, log: (m: s
     return
   }
   res.statusCode = status
-  if (status === 401) res.setHeader('WWW-Authenticate', 'Basic realm="Family Drive", charset="UTF-8"')
+  if (status === 401) res.setHeader('WWW-Authenticate', 'Basic realm="Doogle", charset="UTF-8"')
   if (status === 405) res.setHeader('Allow', ALLOW)
   if (method === 'PUT') res.setHeader('Connection', 'close') // don't wait for an unread upload body
   res.setHeader('Content-Type', 'text/plain; charset=utf-8')

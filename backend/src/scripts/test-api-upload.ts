@@ -8,7 +8,7 @@ async function main() {
   const user = await prisma.user.findFirst({ select: { id: true } })
   if (!user) throw new Error('No user found. Register a user first.')
 
-  const secret = `9d_live_${randomToken(32)}`
+  const secret = `dg_live_${randomToken(32)}`
   const apiKey = await prisma.apiKey.create({ data: { userId: user.id, name: 'API upload smoke test', keyPrefix: secret.slice(0, 16), keyHash: hashToken(secret), scopes: ['files:upload'] } })
 
   const content = 'api upload smoke test'
