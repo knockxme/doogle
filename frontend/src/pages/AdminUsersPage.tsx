@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { KeyRound, Pencil, Trash2, UserPlus, UserX, UserCheck } from 'lucide-react'
+import { HardDrive, KeyRound, Pencil, Trash2, UserPlus, UserX, UserCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -16,6 +16,7 @@ type AdminUser = {
   role: 'admin' | 'member'
   status: 'active' | 'disabled'
   mustChangePassword: boolean
+  davEnabled: boolean
   storageLimitBytes: string | null
   usedBytes: string
   fileCount: number
@@ -119,6 +120,17 @@ export function AdminUsersPage() {
     }
   }
 
+  async function toggleDav(user: AdminUser) {
+    setMessage('')
+    try {
+      await apiFetch(`/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ davEnabled: !user.davEnabled }) })
+      setMessage(user.davEnabled ? `WebDAV turned off for ${user.email}. Their WebDAV keys were revoked.` : `WebDAV turned on for ${user.email}. They can now create a WebDAV key on the API Keys page.`)
+      await load()
+    } catch (error) {
+      setMessage(readable(error, 'Request failed'))
+    }
+  }
+
   return (
     <>
       <PageHeader title="Users" description="Family members, their storage limits and access." actions={<Button onClick={() => open({ kind: 'create' })}><UserPlus className="h-4 w-4" />Add user</Button>} />
@@ -145,6 +157,7 @@ export function AdminUsersPage() {
                     <p className="mt-1 flex gap-1.5 text-[11px] font-bold uppercase tracking-wide">
                       <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">{user.role}</span>
                       {user.mustChangePassword ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">Password change pending</span> : null}
+                      {user.davEnabled ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-700">WebDAV</span> : null}
                     </p>
                   </td>
                   <td className="p-4"><span className={user.status === 'active' ? 'rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700' : 'rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-600'}>{user.status}</span></td>
@@ -154,6 +167,7 @@ export function AdminUsersPage() {
                     <div className="flex flex-wrap justify-end gap-1.5">
                       <Button size="sm" variant="outline" onClick={() => open({ kind: 'limit', user })}><Pencil className="h-3.5 w-3.5" />Limit</Button>
                       <Button size="sm" variant="outline" onClick={() => open({ kind: 'reset', user })}><KeyRound className="h-3.5 w-3.5" />Reset</Button>
+                      <Button size="sm" variant="outline" title="WebDAV lets apps like rclone read, change and delete this user's files with a WebDAV key." onClick={() => toggleDav(user)}><HardDrive className="h-3.5 w-3.5" />{user.davEnabled ? 'WebDAV off' : 'WebDAV on'}</Button>
                       {!self ? <Button size="sm" variant="outline" onClick={() => toggleStatus(user)}>{user.status === 'active' ? <><UserX className="h-3.5 w-3.5" />Disable</> : <><UserCheck className="h-3.5 w-3.5" />Enable</>}</Button> : null}
                       {!self ? <Button size="sm" variant="danger" onClick={() => open({ kind: 'delete', user })}><Trash2 className="h-3.5 w-3.5" />Delete</Button> : null}
                     </div>
