@@ -231,6 +231,8 @@ test('capped accounts serialize capBytes as a string in admin listings', async (
   const list = await http('GET', '/connected-accounts', { token })
   assert.equal(list.status, 200)
   assert.equal(list.json.accounts.find((a: any) => a.id === acct.id).capBytes, '12345')
+  // Stored credentials stay on the server, even encrypted.
+  assert.doesNotMatch(JSON.stringify(list.json), /TokenEncrypted|providerAccountId/)
   const pool = await http('GET', '/admin/storage/accounts', { token })
   assert.equal(pool.status, 200)
   assert.equal(pool.json.accounts.find((a: any) => a.id === acct.id).capBytes, '12345')

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { google } from 'googleapis'
-import type { Prisma } from '@prisma/client'
+import type { ConnectedAccount, Prisma, StorageAccount } from '@prisma/client'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
@@ -29,6 +29,32 @@ const s3ConnectSchema = z.object({
   quotaBytes: z.string().regex(/^\d+$/).optional().nullable(),
 })
 
+type AccountRow = Pick<ConnectedAccount, 'id' | 'provider' | 'email' | 'displayName' | 'avatarUrl' | 'status' | 'lastError' | 'capBytes' | 'pausedUntil' | 'createdAt'>
+type QuotaRow = Pick<StorageAccount, 'totalBytes' | 'usedBytes' | 'availableBytes' | 'trashBytes' | 'lastSyncedAt'>
+
+/** What the admin screen needs. Stored credentials, even encrypted, never leave the server. */
+function publicAccount(account: AccountRow, quota: QuotaRow | null) {
+  return {
+    id: account.id,
+    provider: account.provider,
+    email: account.email,
+    displayName: account.displayName,
+    avatarUrl: account.avatarUrl,
+    status: account.status,
+    lastError: account.lastError,
+    capBytes: account.capBytes?.toString() ?? null,
+    pausedUntil: account.pausedUntil,
+    createdAt: account.createdAt,
+    storageAccount: quota ? {
+      totalBytes: quota.totalBytes?.toString() ?? null,
+      usedBytes: quota.usedBytes.toString(),
+      availableBytes: quota.availableBytes?.toString() ?? null,
+      trashBytes: quota.trashBytes?.toString() ?? null,
+      lastSyncedAt: quota.lastSyncedAt,
+    } : null,
+  }
+}
+
 connectedAccountRouter.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const accounts = await prisma.connectedAccount.findMany({
@@ -47,19 +73,7 @@ connectedAccountRouter.get('/', requireAuth, requireAdmin, async (req: AuthReque
       })
       : accounts
 
-    return res.json({
-      accounts: syncedAccounts.map(({ accessTokenEncrypted: _a, refreshTokenEncrypted: _r, storageAccount, ...account }) => ({
-        ...account,
-        capBytes: account.capBytes?.toString() ?? null,
-        storageAccount: storageAccount ? {
-          ...storageAccount,
-          totalBytes: storageAccount.totalBytes?.toString() ?? null,
-          usedBytes: storageAccount.usedBytes.toString(),
-          availableBytes: storageAccount.availableBytes?.toString() ?? null,
-          trashBytes: storageAccount.trashBytes?.toString() ?? null,
-        } : null,
-      })),
-    })
+    return res.json({ accounts: syncedAccounts.map((account) => publicAccount(account, account.storageAccount)) })
   } catch (error) {
     return next(error)
   }
@@ -146,13 +160,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
     try {
       await testS3Connection(config)
       const quota = await syncS3Quota(account.id)
-      return res.status(201).json({
-        account: {
-          ...account,
-          capBytes: account.capBytes?.toString() ?? null,
-          storageAccount: { ...quota, totalBytes: quota.totalBytes?.toString() ?? null, usedBytes: quota.usedBytes.toString(), availableBytes: quota.availableBytes?.toString() ?? null, trashBytes: quota.trashBytes?.toString() ?? null },
-        },
-      })
+      return res.status(201).json({ account: publicAccount(account, quota) })
     } catch (error) {
       if (!existingAccount) await prisma.connectedAccount.delete({ where: { id: account.id } }).catch(() => undefined)
       // The SDK error name (NoSuchBucket, InvalidAccessKeyId, AccessDenied...) is safe to show and tells the admin what to fix.
