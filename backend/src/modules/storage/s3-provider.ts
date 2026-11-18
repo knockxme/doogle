@@ -21,12 +21,17 @@ async function ctx(account: ConnectedAccount): Promise<{ client: S3Client; confi
   return { client: createS3Client(config), config }
 }
 
-function mapError(error: unknown): never {
+/**
+ * Map an S3 SDK error. notFound is true only when the object (op 'object') or the
+ * multipart upload is gone; a missing bucket or any other 404 means the account is unusable.
+ */
+export function mapS3Error(error: unknown, op: 'object' | 'other'): never {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } }
   const status = e.$metadata?.httpStatusCode
-  if (e.name === 'NoSuchKey' || e.name === 'NoSuchUpload' || e.name === 'NotFound' || status === 404) {
-    throw new ProviderUnavailableError('S3 object or upload not found.', true)
-  }
+  if (e.name === 'NoSuchUpload') throw new ProviderUnavailableError('S3 multipart upload not found.', true)
+  if (op === 'object' && (e.name === 'NoSuchKey' || e.name === 'NotFound')) throw new ProviderUnavailableError('S3 object not found.', true)
+  if (e.name === 'NoSuchBucket') throw new ProviderUnavailableError('S3 bucket not found.', false)
+  if (status === 404) throw new ProviderUnavailableError('S3 resource not found.', false)
   if (status === 401 || status === 403) throw new ProviderUnavailableError('S3 access denied.', false)
   throw error
 }
@@ -68,7 +73,7 @@ export const s3Provider: StorageProvider = {
       if (!res.UploadId) throw new Error('S3 did not return an upload id.')
       return { s3UploadId: res.UploadId, providerFileId: key, partEtags: [] }
     } catch (error) {
-      return mapError(error)
+      return mapS3Error(error, 'other')
     }
   },
 
@@ -95,7 +100,7 @@ export const s3Provider: StorageProvider = {
       }))
       return { state: next, complete: true }
     } catch (error) {
-      return mapError(error)
+      return mapS3Error(error, 'other')
     }
   },
 
@@ -112,10 +117,10 @@ export const s3Provider: StorageProvider = {
           await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: state.providerFileId }))
           return totalSize
         } catch (headError) {
-          return mapError(headError)
+          return mapS3Error(headError, 'object')
         }
       }
-      return mapError(error)
+      return mapS3Error(error, 'other')
     }
   },
 
@@ -126,7 +131,7 @@ export const s3Provider: StorageProvider = {
       await client.send(new AbortMultipartUploadCommand({ Bucket: config.bucket, Key: state.providerFileId, UploadId: state.s3UploadId }))
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchUpload') return
-      mapError(error)
+      mapS3Error(error, 'other')
     }
   },
 
@@ -137,7 +142,7 @@ export const s3Provider: StorageProvider = {
       if (!res.Body) throw new Error('S3 returned an empty body.')
       return res.Body as Readable
     } catch (error) {
-      return mapError(error)
+      return mapS3Error(error, 'object')
     }
   },
 
@@ -146,7 +151,7 @@ export const s3Provider: StorageProvider = {
     try {
       await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: providerFileId }))
     } catch (error) {
-      mapError(error)
+      mapS3Error(error, 'object')
     }
   },
 }
