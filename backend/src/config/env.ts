@@ -21,6 +21,11 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().default(30),
   MAX_UPLOAD_BYTES: z.coerce.number().default(5 * 1024 * 1024 * 1024),
+  // Proxies in front of the backend that add X-Forwarded-For: 1 = the app's nginx, 2 = nginx plus an outer HTTPS proxy.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
+  DAV_ENABLED: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  DAV_CACHE_MB: z.coerce.number().int().min(0).max(4096).default(256),
+  DAV_READ_AHEAD: z.coerce.number().int().min(0).max(8).default(2),
 })
 
 export const env = envSchema.parse(process.env)

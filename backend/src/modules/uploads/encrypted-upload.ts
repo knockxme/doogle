@@ -215,6 +215,7 @@ async function createFile(session: LoadedSession, copies: Copy[], total: bigint)
         sizeBytes: session.sizeBytes,
         wrappedFileKey: session.wrappedFileKey,
         encryptedSizeBytes: total,
+        contentModifiedAt: new Date(),
         replicas: { create: copies.map((copy) => ({ connectedAccountId: copy.account.id, providerFileId: copy.state.providerFileId!, sizeBytes: total })) },
       },
     }),
@@ -254,6 +255,8 @@ async function writeLocked(sessionId: string, plainOffset: bigint, plaintext: Bu
   }
   assertWritable(session)
   assertAligned(session, plainOffset, plaintext.length)
+  // The stale-upload sweep measures inactivity from here.
+  await prisma.uploadSession.updateMany({ where: { id: sessionId, status: 'uploading' }, data: { lastActivityAt: new Date() } })
 
   const copies = await loadCopies(session)
   if (copies.length !== 2) {
