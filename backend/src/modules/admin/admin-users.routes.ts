@@ -7,6 +7,8 @@ import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from '.
 import { failUpload } from '../uploads/encrypted-upload.js'
 import { hashPassword } from '../../utils/password.js'
 import { assertNotLastAdmin } from './admin-rules.js'
+import { forgetDavLogins } from '../webdav/logins.js'
+import { DAV_SCOPE } from '../webdav/family-ports.js'
 
 export const adminUsersRouter = Router()
 adminUsersRouter.use(requireAuth, requireAdmin)
@@ -21,10 +23,11 @@ const createSchema = z.object({
 const patchSchema = z.object({
   storageLimitBytes: limitSchema.optional(),
   status: z.enum(['active', 'disabled']).optional(),
+  davEnabled: z.boolean().optional(),
 })
 const resetSchema = z.object({ temporaryPassword: z.string().min(8) })
 
-function serialize(user: { id: string; name: string; email: string; role: string; status: string; mustChangePassword: boolean; storageLimitBytes: bigint | null; createdAt: Date }, usedBytes = 0n, fileCount = 0, totalBytes = 0n, totalFileCount = 0) {
+function serialize(user: { id: string; name: string; email: string; role: string; status: string; mustChangePassword: boolean; davEnabled: boolean; storageLimitBytes: bigint | null; createdAt: Date }, usedBytes = 0n, fileCount = 0, totalBytes = 0n, totalFileCount = 0) {
   return {
     id: user.id,
     name: user.name,
@@ -32,6 +35,7 @@ function serialize(user: { id: string; name: string; email: string; role: string
     role: user.role,
     status: user.status,
     mustChangePassword: user.mustChangePassword,
+    davEnabled: user.davEnabled,
     storageLimitBytes: user.storageLimitBytes === null ? null : user.storageLimitBytes.toString(),
     usedBytes: usedBytes.toString(),
     fileCount,
@@ -79,10 +83,18 @@ adminUsersRouter.patch('/:id', async (req: AuthRequest, res, next) => {
     const target = await prisma.user.findUnique({ where: { id: String(req.params.id) } })
     if (!target) return res.status(404).json({ code: 'USER_NOT_FOUND', message: 'User not found.' })
     if (body.status === 'disabled') assertNotLastAdmin(await countActiveAdmins(), target)
-    const data: { status?: string; storageLimitBytes?: bigint | null } = {}
+    const data: { status?: string; storageLimitBytes?: bigint | null; davEnabled?: boolean } = {}
     if (body.status !== undefined) data.status = body.status
     if (body.storageLimitBytes !== undefined) data.storageLimitBytes = body.storageLimitBytes
+    if (body.davEnabled !== undefined) data.davEnabled = body.davEnabled
     const user = await prisma.user.update({ where: { id: target.id }, data })
+    if (body.davEnabled === false) {
+      // Turning WebDAV off revokes the keys that used it.
+      const keys = await prisma.apiKey.findMany({ where: { userId: target.id, revokedAt: null }, select: { id: true, scopes: true } })
+      const davKeys = keys.filter((k) => Array.isArray(k.scopes) && k.scopes.includes(DAV_SCOPE)).map((k) => k.id)
+      if (davKeys.length > 0) await prisma.apiKey.updateMany({ where: { id: { in: davKeys } }, data: { status: 'revoked', revokedAt: new Date() } })
+    }
+    if (body.status === 'disabled' || body.davEnabled === false) forgetDavLogins()
     return res.json({ user: serialize(user) })
   } catch (error) {
     return next(error)
@@ -98,6 +110,8 @@ adminUsersRouter.post('/:id/reset-password', async (req, res, next) => {
       prisma.user.update({ where: { id: target.id }, data: { passwordHash: await hashPassword(body.temporaryPassword), mustChangePassword: true } }),
       prisma.userSession.updateMany({ where: { userId: target.id, revokedAt: null }, data: { revokedAt: new Date() } }),
     ])
+    // Keys stop working until the new password is chosen; drop any cached WebDAV login now.
+    forgetDavLogins()
     return res.json({ status: 'ok' })
   } catch (error) {
     return next(error)
@@ -121,6 +135,7 @@ adminUsersRouter.delete('/:id', async (req, res, next) => {
       await prisma.file.delete({ where: { id: file.id } })
     }
     await prisma.user.delete({ where: { id: target.id } })
+    forgetDavLogins()
     refreshQuotasAfterDelete(files)
     return res.json({ status: 'ok', deletedFiles: files.length })
   } catch (error) {

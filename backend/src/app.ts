@@ -1,5 +1,5 @@
 import cors from 'cors'
-import express from 'express'
+import express, { type Request } from 'express'
 import { env } from './config/env.js'
 import { errorMiddleware } from './middleware/error.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
@@ -17,9 +17,26 @@ import { auditLogRouter } from './modules/audit-logs/audit-log.routes.js'
 import { adminUsersRouter } from './modules/admin/admin-users.routes.js'
 import { adminStorageRouter } from './modules/admin/admin-storage.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
+import { createDavHandler } from './modules/webdav/index.js'
+import { familyPorts } from './modules/webdav/family-ports.js'
 
 export const app = express()
-app.set('trust proxy', 1)
+app.set('trust proxy', env.TRUST_PROXY_HOPS)
+
+// WebDAV for rclone. Mounted before cors() (which would answer OPTIONS itself) and before the JSON parser
+// (which would swallow a PUT of a .json file). It has its own Basic auth and its own failed sign-in limit.
+if (env.DAV_ENABLED) {
+  const dav = createDavHandler(familyPorts, {
+    publicPrefix: '/api/dav',
+    stripPrefix: '',
+    maxFileBytes: env.MAX_UPLOAD_BYTES,
+    cacheBytes: env.DAV_CACHE_MB * 1024 * 1024,
+    readAheadPieces: env.DAV_READ_AHEAD,
+    // req.ip follows `trust proxy`, so a client cannot pick its own address with X-Forwarded-For.
+    clientIp: (req) => (req as Request).ip ?? req.socket.remoteAddress ?? 'unknown',
+  })
+  app.use('/api/dav', (req, res) => void dav(req, res))
+}
 
 app.use(cors({ origin: env.FRONTEND_URL }))
 app.use(express.json({ limit: '1mb' }))

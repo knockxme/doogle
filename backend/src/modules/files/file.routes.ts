@@ -12,6 +12,7 @@ import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { ZipArchive } from 'archiver'
 import { createAuditLog } from '../../utils/audit.js'
+import { TEMP_PREFIX } from '../webdav/util.js'
 
 
 
@@ -56,6 +57,8 @@ fileRouter.get('/', async (req: AuthRequest, res, next) => {
     const where: any = {
       userId: req.user!.id,
       status: 'active',
+      // A WebDAV upload is stored under a hidden name until it is renamed into place.
+      NOT: { name: { startsWith: TEMP_PREFIX } },
       ...(query.folderId ? { folderId: query.folderId } : {}),
       ...(query.q ? { name: { contains: query.q } } : {}),
       ...(query.kind ? { mimeType: { in: typeFilters[query.kind] || [] } } : {}),
