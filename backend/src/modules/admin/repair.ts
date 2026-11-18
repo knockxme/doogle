@@ -29,7 +29,8 @@ type Held = { id: string; status: string; connectedAccount: { status: string } }
 export const isUsableCopy = (r: Held) => r.status === 'healthy' && r.connectedAccount.status === 'connected'
 
 const loadPage = (cursor: string | undefined) => prisma.file.findMany({
-  where: { status: { in: LIVE_STATUSES }, ...(cursor ? { id: { gt: cursor } } : {}) },
+  // Empty files are stored without copies, so they never need one.
+  where: { status: { in: LIVE_STATUSES }, sizeBytes: { gt: 0 }, ...(cursor ? { id: { gt: cursor } } : {}) },
   omit: { encryptedSizeBytes: false },
   include: { replicas: { include: { connectedAccount: { select: { status: true } } } } },
   orderBy: { id: 'asc' },
@@ -179,7 +180,8 @@ async function abandon(sessionId: string, account: ConnectedAccount, state: Repl
   if (state.sessionUri || state.s3UploadId || state.providerFileId) await providerFor(account).abortUpload(account, state).catch(() => undefined)
 }
 
-async function sweepOrphans() {
+/** Retries deletion of every queued blob on a reachable account. Runs after Repair and from the hourly cleanup. */
+export async function sweepOrphans() {
   const orphans = await prisma.orphanBlob.findMany({ where: { connectedAccount: { status: 'connected' } }, include: { connectedAccount: true } })
   for (const orphan of orphans) {
     try {

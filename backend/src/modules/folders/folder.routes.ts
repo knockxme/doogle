@@ -2,14 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
-import { deletableFileArgs, deleteFileCopies, refreshQuotasAfterDelete } from '../files/delete-blobs.js'
+import { assertFolderMove, createFolder, deleteFolderTree, FolderError } from './folder-service.js'
 import { createAuditLog } from '../../utils/audit.js'
 
 export const folderRouter = Router()
 folderRouter.use(requireAuth)
 
-const defaultFolderColor = '#3b82f6'
-const defaultFolderIconUrl = 'https://api.iconify.design/lucide:folder.svg'
 const iconUrlSchema = z.string().url().startsWith('https://api.iconify.design/lucide:').max(2048)
 const colorSchema = z.string().regex(/^(#[0-9a-fA-F]{6}|text-[a-z]+-[0-9]+)$/).max(64)
 
@@ -36,6 +34,7 @@ folderRouter.get('/', async (req: AuthRequest, res, next) => {
     })
     return res.json({ folders: folders.map(serializeFolder) })
   } catch (error) {
+    if (error instanceof FolderError) return res.status(error.status).json({ code: error.code, message: error.message })
     return next(error)
   }
 })
@@ -51,6 +50,7 @@ folderRouter.get('/recent', async (req: AuthRequest, res, next) => {
     })
     return res.json({ folders: folders.map(serializeFolder) })
   } catch (error) {
+    if (error instanceof FolderError) return res.status(error.status).json({ code: error.code, message: error.message })
     return next(error)
   }
 })
@@ -58,25 +58,11 @@ folderRouter.get('/recent', async (req: AuthRequest, res, next) => {
 folderRouter.post('/', async (req: AuthRequest, res, next) => {
   try {
     const body = createSchema.parse(req.body)
-    if (body.parentId) {
-      await prisma.folder.findFirstOrThrow({
-        where: { id: body.parentId, userId: req.user!.id, deletedAt: null }
-      })
-    }
-
-    const folder = await prisma.folder.create({
-      data: {
-        userId: req.user!.id,
-        name: body.name,
-        color: body.color ?? defaultFolderColor,
-        iconUrl: body.iconUrl ?? defaultFolderIconUrl,
-        parentId: body.parentId ?? null,
-      },
-      select: folderSelect,
-    })
+    const folder = await createFolder(req.user!.id, { name: body.name, parentId: body.parentId ?? null, color: body.color, iconUrl: body.iconUrl })
     await createAuditLog(req.user!.id, 'CREATE_FOLDER', 'folder', folder.id, { name: folder.name })
     return res.status(201).json({ folder: serializeFolder(folder) })
   } catch (error) {
+    if (error instanceof FolderError) return res.status(error.status).json({ code: error.code, message: error.message })
     return next(error)
   }
 })
@@ -85,26 +71,8 @@ folderRouter.patch('/:id', async (req: AuthRequest, res, next) => {
   try {
     const body = createSchema.partial().parse(req.body)
     const folderId = String(req.params.id)
-    if (body.parentId === folderId) return res.status(400).json({ code: 'FOLDER_INVALID_PARENT', message: 'Folder cannot be moved into itself.' })
-
     await prisma.folder.findFirstOrThrow({ where: { id: folderId, userId: req.user!.id, deletedAt: null } })
-
-    if (body.parentId) {
-      await prisma.folder.findFirstOrThrow({ where: { id: body.parentId, userId: req.user!.id, deletedAt: null } })
-      const folders = await prisma.folder.findMany({ where: { userId: req.user!.id, deletedAt: null }, select: { id: true, parentId: true } })
-      const descendantIds = new Set<string>([folderId])
-      let changed = true
-      while (changed) {
-        changed = false
-        for (const folder of folders) {
-          if (folder.parentId && descendantIds.has(folder.parentId) && !descendantIds.has(folder.id)) {
-            descendantIds.add(folder.id)
-            changed = true
-          }
-        }
-      }
-      if (descendantIds.has(body.parentId)) return res.status(400).json({ code: 'FOLDER_INVALID_PARENT', message: 'Folder cannot be moved into itself or a child folder.' })
-    }
+    if (body.parentId !== undefined) await assertFolderMove(prisma, req.user!.id, folderId, body.parentId)
 
     const folder = await prisma.folder.updateMany({
       where: { id: folderId, userId: req.user!.id, deletedAt: null },
@@ -118,45 +86,20 @@ folderRouter.patch('/:id', async (req: AuthRequest, res, next) => {
     await createAuditLog(req.user!.id, 'UPDATE_FOLDER', 'folder', updated.id, { name: updated.name, updates: body })
     return res.json({ folder: serializeFolder(updated) })
   } catch (error) {
+    if (error instanceof FolderError) return res.status(error.status).json({ code: error.code, message: error.message })
     return next(error)
   }
 })
 
 folderRouter.delete('/:id', async (req: AuthRequest, res, next) => {
   try {
-    const rootId = String(req.params.id)
-    const root = await prisma.folder.findFirstOrThrow({ where: { id: rootId, userId: req.user!.id, deletedAt: null } })
-    const folders = await prisma.folder.findMany({ where: { userId: req.user!.id, deletedAt: null }, select: { id: true, parentId: true } })
-    const folderIds = new Set<string>([root.id])
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const folder of folders) {
-        if (folder.parentId && folderIds.has(folder.parentId) && !folderIds.has(folder.id)) {
-          folderIds.add(folder.id)
-          changed = true
-        }
-      }
-    }
-
-    const files = await prisma.file.findMany({ where: { userId: req.user!.id, status: 'active', folderId: { in: [...folderIds] } }, ...deletableFileArgs })
-    const deleted: typeof files = []
-    for (const file of files) {
-      try {
-        await deleteFileCopies(file)
-        await prisma.file.delete({ where: { id: file.id } })
-        deleted.push(file)
-      } catch (error) {
-        // Keep going so one failure does not block the whole deletion
-        console.error(`Could not delete file ${file.id} with its folder:`, error instanceof Error ? error.name : 'error')
-      }
-    }
-    await prisma.folder.updateMany({ where: { id: { in: [...folderIds] }, userId: req.user!.id }, data: { deletedAt: new Date() } })
-    refreshQuotasAfterDelete(deleted)
-
+    const root = await prisma.folder.findFirstOrThrow({ where: { id: String(req.params.id), userId: req.user!.id, deletedAt: null } })
+    // Every file in the tree goes for good, trash included, so nothing is left pointing at a deleted folder.
+    await deleteFolderTree(req.user!.id, root.id)
     await createAuditLog(req.user!.id, 'DELETE_FOLDER', 'folder', root.id, { name: root.name })
     return res.json({ status: 'ok' })
   } catch (error) {
+    if (error instanceof FolderError) return res.status(error.status).json({ code: error.code, message: error.message })
     return next(error)
   }
 })

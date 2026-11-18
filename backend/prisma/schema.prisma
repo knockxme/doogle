@@ -16,6 +16,7 @@ model User {
   role           String             @default("member") @db.VarChar(32)
   mustChangePassword Boolean        @default(false) @map("must_change_password")
   storageLimitBytes BigInt?         @map("storage_limit_bytes")
+  davEnabled     Boolean            @default(false) @map("dav_enabled")
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
   sessions       UserSession[]
@@ -192,6 +193,7 @@ model File {
   wrappedFileKey     String           @map("wrapped_file_key") @db.Text
   encryptedSizeBytes BigInt           @map("encrypted_size_bytes")
   encVersion         Int              @default(1) @map("enc_version")
+  contentModifiedAt  DateTime?        @map("content_modified_at") @db.DateTime(3)
   status             String           @default("active") @db.VarChar(32)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
@@ -205,6 +207,7 @@ model File {
   @@index([userId])
   @@index([userId, status, createdAt])
   @@index([userId, status, folderId, createdAt])
+  @@index([userId, folderId, name])
   @@index([folderId])
   @@map("files")
 }
@@ -267,6 +270,7 @@ model Folder {
   @@index([userId])
   @@index([userId, deletedAt, updatedAt])
   @@index([userId, deletedAt, parentId, updatedAt])
+  @@index([userId, parentId, name])
   @@index([parentId])
   @@index([connectedAccountId])
   @@map("folders")
@@ -287,6 +291,7 @@ model UploadSession {
   errorMessage             String?           @map("error_message") @db.Text
   createdAt                DateTime          @default(now()) @map("created_at")
   completedAt              DateTime?         @map("completed_at")
+  lastActivityAt           DateTime          @default(now()) @map("last_activity_at")
   user                     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   targetConnectedAccount   ConnectedAccount? @relation(fields: [targetConnectedAccountId], references: [id], onDelete: SetNull)
   folder                   Folder?           @relation("UploadSessionFolder", fields: [folderId], references: [id], onDelete: SetNull)

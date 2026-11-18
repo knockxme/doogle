@@ -57,6 +57,8 @@ export async function openDecryptedStream(file: FileWithReplicas, range: ByteRan
   const encSize = file.encryptedSizeBytes
   const total = frameCount(size)
   if (encSize !== encryptedSize(size)) throw new FileUnavailableError()
+  // Empty files are stored without copies.
+  if (size === 0n) return Readable.from([])
   const fileKey = openFileKey(file.userId, file.wrappedFileKey)
 
   const replicas = file.replicas

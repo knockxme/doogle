@@ -28,7 +28,7 @@ export function servedAs(mimeType: string, requested: 'inline' | 'attachment' | 
 }
 
 /** Set on every response that carries file bytes, so the browser never sniffs or runs them. */
-export function setFileSecurityHeaders(res: Response) {
+export function setFileSecurityHeaders(res: Pick<Response, 'setHeader'> | { setHeader(name: string, value: string): unknown }) {
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'")
 }
