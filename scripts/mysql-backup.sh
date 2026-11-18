@@ -25,7 +25,17 @@ run_once() {
   fi
 }
 
+# The backend creates the tables on its first start. A dump taken before that would be empty.
+wait_for_schema() {
+  for _ in $(seq 1 120); do
+    if mysql -h "$DB_HOST" -u root -N -e "SELECT 1 FROM \`$DB_NAME\`._prisma_migrations LIMIT 1" >/dev/null 2>&1; then return 0; fi
+    sleep 5
+  done
+  echo "tables not found after 10 minutes, dumping anyway" >&2
+}
+
 mkdir -p "$BACKUP_DIR"
+wait_for_schema
 while true; do
   run_once
   [ "${BACKUP_ONCE:-}" = "1" ] && break
