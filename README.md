@@ -17,13 +17,15 @@ Based on [9Drive](https://9drive.zenhosta.com) by Zenhosta, licensed under Apach
 7. [Day-to-day admin](#day-to-day-admin)
 8. [Media library over WebDAV (rclone, Jellyfin)](#media-library-over-webdav-rclone-jellyfin)
 9. [Backups and restore](#backups-and-restore)
-10. [The master key](#the-master-key)
-11. [Settings reference](#settings-reference)
-12. [Troubleshooting](#troubleshooting)
-13. [Known limits and open issues](#known-limits-and-open-issues)
-14. [Owner's first check](#owners-first-check)
-15. [Install without Docker](#install-without-docker)
-16. [Development](#development)
+10. [Updating](#updating)
+11. [The master key](#the-master-key)
+12. [Settings reference](#settings-reference)
+13. [Troubleshooting](#troubleshooting)
+14. [What has been tested](#what-has-been-tested)
+15. [Known limits and open issues](#known-limits-and-open-issues)
+16. [Owner's first check](#owners-first-check)
+17. [Install without Docker](#install-without-docker)
+18. [Development](#development)
 
 ---
 
@@ -54,7 +56,9 @@ So the three things that matter are: **the master key, the database, and at leas
 | Cap | A size limit you set per storage account. It counts encrypted bytes this app stored there. |
 | Full | The account has reached its cap or its real free space. New files skip it. |
 | Paused | Google said the account hit its daily upload limit (about 750 GB per day). It is skipped for 24 hours. |
+| Copy check | An hourly background check that each copy still exists. Every copy is checked about once a week. |
 | Repair | A button that makes a new copy for every file that has fewer than two good copies. |
+| WebDAV | A standard way for other programs (rclone, and through it Jellyfin, Sonarr...) to use the drive like a folder. Off unless an admin turns it on per user. |
 | Storage limit | A size limit you set per family member. It counts each file once at its real size, trash included. |
 
 ## Who can see what
@@ -138,7 +142,8 @@ All file bytes pass through your server, so its internet speed limits playback a
 - **Add user:** name, email, temporary password, optional storage limit in GB.
 - **Limit:** change someone's storage limit. Empty means unlimited.
 - **Reset:** sets a new temporary password and signs that person out everywhere.
-- **Disable / Enable:** blocks or unblocks sign-in, API keys and their public links. Nothing is deleted.
+- **Disable / Enable:** blocks or unblocks sign-in, API keys, WebDAV and their public links, at once. Nothing is deleted.
+- **WebDAV on / off:** lets this user mount their files with rclone (see [Media library over WebDAV](#media-library-over-webdav-rclone-jellyfin)). Turning it off revokes their WebDAV keys.
 - **Delete:** permanently deletes the person and **all their files**, after you type their email. Use Disable if unsure.
 - At least one active admin must always remain. A second admin can only be created with the `admin:create` command.
 
@@ -204,7 +209,7 @@ rclone mount familydrive: /media/library \
 
 ## Backups and restore
 
-The `backup` service runs `mysqldump` once a day into the Docker volume `backups` (gzipped) and deletes dumps older than 14 days. The first dump is taken when the service starts.
+The `backup` service runs `mysqldump` once a day into the Docker volume `backups` (gzipped) and deletes dumps older than 14 days. The first dump is taken as soon as the backend has created the database tables.
 
 - Backups **do not** contain `FILE_MASTER_KEY`. The key is only in `.env`.
 - Copy **both** off the server regularly, and keep them in **different places**: the dumps, and the key (offline).
@@ -237,6 +242,16 @@ gunzip -c ./backups-copy/backup-YYYYMMDDTHHMMSSZ.sql.gz \
   | docker compose exec -T mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" 9drive'
 docker compose up -d --build
 ```
+
+## Updating
+
+```bash
+docker compose exec -T backup sh -c 'BACKUP_ONCE=1 bash /usr/local/bin/mysql-backup.sh'   # fresh backup first
+git pull
+docker compose up -d --build
+```
+
+Database changes are applied automatically when the backend starts. Check `docker compose logs backend` for `Backend running`. Your `.env`, the database and the backups are kept.
 
 ## The master key
 
@@ -275,14 +290,23 @@ These go in the root `.env` for Docker (or `backend/.env` without Docker).
 | Every Google account stops working after a week | The Google OAuth app is still in "Testing". Set it to **In production** and reconnect the accounts. |
 | Google connection fails with a "redirect_uri_mismatch" error | The redirect URI in Google Cloud and in **Admin > Storage** must be exactly the same, including `https` and `/api`. |
 | An upload keeps failing | Press **Retry** in the upload panel; it continues where it stopped, as long as the tab was not closed. |
+| "Lost copies" appear without anything happening | The copy check found a copy that was deleted in Google Drive or the bucket. Run **Repair**. |
+| rclone says 401 | The user needs **WebDAV on** in Admin > Users, the key must be a **WebDAV** key (not upload-only), and the rclone `user` must be that user's email. |
+| rclone says 429 | Too many wrong keys from that address. Wait 15 minutes, then fix the key. |
+| Sign-ins get "too many attempts" for everyone | You have an HTTPS proxy in front: set `TRUST_PROXY_HOPS=2` and run `docker compose up -d`. |
 | Logs | `docker compose logs -f backend` |
+
+## What has been tested
+
+- **Automatic tests** (`npm test`, `npm run test:integration`): encryption, seeking, uploads with dropped connections, both copies, failover, the copy check, Repair, permissions, WebDAV.
+- **The full Docker stack, end to end**, with an S3-compatible test server as storage: sign-in and password change, connecting S3, upload and download through nginx (checked byte for byte, plus seeking), that the buckets hold only encrypted `.bin` files, public links, disabling a user, WebDAV with the smoke test, failover after deleting a copy, Repair, backup and restore, and the wrong-key refusal.
+- **Not yet tested:** real Google accounts, rclone itself, a Raspberry Pi, and the pages in a browser. Do the [owner's first check](#owners-first-check) before trusting real files to it.
 
 ## Known limits and open issues
 
 - Invites list names but give the recipient no access to the file yet.
 - Office files (Word, Excel...) have no preview. Images, video, audio and PDF do.
 - One backend process only.
-- Real Google and S3 behaviour has not been tested against live accounts yet. The tests use fakes. Do the [owner's first check](#owners-first-check) before trusting real files to it.
 - An upload that stops (tab closed, connection lost) keeps its reserved space for up to a day. Then the hourly cleanup cancels it and deletes its partial copies.
 - There is no button to cancel an upload while it runs.
 - An account marked **Unhealthy** stays out until you reconnect it, even if the problem was brief.
@@ -301,13 +325,16 @@ Do this once with two real Gmail accounts before storing real files:
 
 ## Install without Docker
 
-You need Node.js 20+ and MySQL 8+. Run `./setup.sh` (or `setup.ps1` on Windows). It creates `backend/.env` and `frontend/.env`, generates the master key and shows it once (type `I SAVED IT` to continue), installs packages, and can create the first admin. It never overwrites an existing master key. Then run `npm run dev` in `backend` and in `frontend`.
+You need Node.js 22 and MySQL 8+ (Node 20 still runs but is past end of life). Run `./setup.sh` (or `setup.ps1` on Windows). It creates `backend/.env` and `frontend/.env`, generates the master key and shows it once (type `I SAVED IT` to continue), installs packages, and can create the first admin. It never overwrites an existing master key. Then run `npm run dev` in `backend` and in `frontend`.
 
 ## Development
 
 ```bash
+# once: the test database
+docker run -d --name family-drive-testdb -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=family_drive_test -p 127.0.0.1:13306:3306 mysql:8.4
+
 cd backend && npm run build && npm test      # unit tests
-cd backend && npm run test:integration       # needs MySQL on 127.0.0.1:13306 (root/root)
+cd backend && npm run test:integration       # integration tests (also runs the WebDAV smoke script; needs bash, curl and sha256sum)
 cd frontend && npm run build
 ```
 
