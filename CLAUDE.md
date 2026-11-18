@@ -19,6 +19,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ESM with `module: NodeNext`: relative imports need a `.js` suffix even in `.ts` files.
 - Code that touches a stored blob goes through the provider layer (`modules/storage/provider.ts`); do not call Google or S3 SDKs from routes.
 - Upload placement is whole-file: `pool-select.ts` chooses two different accounts, `pool.ts` reserves space on both. Reads try one replica and fall back to the other; Repair rebuilds missing replicas.
-- The Google OAuth client comes from the database (`ProviderConfig`, seeded from `GOOGLE_*` or saved by an admin), not from `env.ts`.
-- Frontend: `lib/api.ts` falls back to `/api` (proxied by `frontend/nginx.conf`, request buffering off) when `VITE_API_URL` is unset or the default. The PWA service worker (`vite.config.ts`) has a `navigateFallbackDenylist` of backend path prefixes; add new top-level backend routes there.
+- The Google OAuth client comes from the database (`ProviderConfig`, seeded from `GOOGLE_*` only when no active config exists, otherwise saved by an admin), not from `env.ts`.
+- Frontend: `lib/api.ts` falls back to `/api` (proxied by `frontend/nginx.conf`, request buffering off) when `VITE_API_URL` is unset or the default. The PWA service worker (`vite.config.ts`) has a `navigateFallbackDenylist` of backend path prefixes; add new top-level backend routes there. `/api` with no slash is the API Keys page: nginx serves it the SPA (`location = /api`), the backend is under `/api/`.
 - Do not run `setup.sh` / `setup.ps1` against the real `backend/.env`; test them in a temporary copy.
