@@ -150,7 +150,8 @@ All file bytes pass through your server, so its internet speed limits playback a
   - *Round robin:* takes turns.
   - *Priority order:* the first two in your list that have room.
 - **Health** shows how many files have fewer than two good copies, and each account's status.
-- **Repair** copies the encrypted bytes of every file with a missing copy onto another account. Run it after an account is lost, or after adding a new one. It runs in the background and resumes after a restart. Playback keeps working from the surviving copy meanwhile.
+- **Copy check:** every hour the app checks a batch of copies to make sure they still exist, so each copy is looked at about once a week. A copy deleted behind the app's back (for example in Google Drive) shows up in Health as a lost copy even if nobody opens that file.
+- **Repair** first checks that every copy still exists (on a big library this takes a few minutes before the progress moves), then copies the encrypted bytes of every file with a missing copy onto another account. Run it after an account is lost, or after adding a new one. It runs in the background and resumes after a restart. Playback keeps working from the surviving copy meanwhile.
 - **Remove:** takes an account out of the app. It is refused while any file's only good copy is on it (run Repair onto another account first). The blobs stay in that Google Drive or bucket; delete them there by hand if you want.
 - **Unhealthy account:** reconnect it (same button as connecting). For S3, enter the bucket details again.
 

@@ -2,7 +2,7 @@ import dotenv from 'dotenv'
 import { z } from 'zod'
 import { parseMasterKey } from '../modules/crypto/keys.js'
 
-dotenv.config()
+dotenv.config({ quiet: true })
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
