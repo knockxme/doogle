@@ -11,6 +11,10 @@ const BATCH_BYTES = 8n * BigInt(FRAME_SIZE)
 const PAGE = 100
 const PAUSE_MS = 24 * 60 * 60 * 1000
 const LIVE_STATUSES = ['active', 'deleted']
+const DAY_MS = 24 * 60 * 60 * 1000
+/** The hourly check looks at each copy about once a week. */
+export const VERIFY_EVERY_MS = 7 * DAY_MS
+const VERIFY_BATCH = 500
 
 export class RepairError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -155,7 +159,7 @@ async function repairOne(snapshot: RepairFile): Promise<'repaired' | 'failed' | 
       await tx.fileReplica.delete({ where: { id: r.id } })
       await tx.orphanBlob.create({ data: { connectedAccountId: r.connectedAccountId, providerFileId: r.providerFileId } })
     }
-    await tx.fileReplica.create({ data: { fileId: file.id, connectedAccountId: target.id, providerFileId, status: 'healthy', sizeBytes: total } })
+    await tx.fileReplica.create({ data: { fileId: file.id, connectedAccountId: target.id, providerFileId, status: 'healthy', sizeBytes: total, lastVerifiedAt: new Date() } })
     await tx.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } })
     return 'ok' as const
   }).catch(() => 'error' as const)
@@ -180,6 +184,59 @@ async function abandon(sessionId: string, account: ConnectedAccount, state: Repl
   if (state.sessionUri || state.s3UploadId || state.providerFileId) await providerFor(account).abortUpload(account, state).catch(() => undefined)
 }
 
+export type VerifyResult = { checked: number; lost: number; refusedAccounts: number }
+
+/**
+ * Checks that copies marked healthy still exist, by reading their last byte. A copy that is gone is marked lost
+ * (so Health counts it and Repair rebuilds it); an account that refuses access is marked unhealthy and skipped.
+ * Without this, a deleted copy is only noticed when someone happens to read that file.
+ */
+export async function verifyCopies(opts: { olderThanMs: number; limit?: number; now?: Date }): Promise<VerifyResult> {
+  const now = opts.now ?? new Date()
+  const cutoff = new Date(now.getTime() - opts.olderThanMs)
+  const refused = new Set<string>()
+  const result: VerifyResult = { checked: 0, lost: 0, refusedAccounts: 0 }
+  let cursor: string | undefined
+  for (;;) {
+    const take = opts.limit === undefined ? PAGE : Math.min(PAGE, opts.limit - result.checked)
+    if (take <= 0) break
+    const replicas = await prisma.fileReplica.findMany({
+      where: { status: 'healthy', connectedAccount: { status: 'connected' }, OR: [{ lastVerifiedAt: null }, { lastVerifiedAt: { lt: cutoff } }], ...(cursor ? { id: { gt: cursor } } : {}) },
+      include: { connectedAccount: true },
+      orderBy: { id: 'asc' },
+      take,
+    })
+    if (replicas.length === 0) break
+    cursor = replicas[replicas.length - 1]!.id
+    for (const replica of replicas) {
+      if (refused.has(replica.connectedAccountId)) continue
+      result.checked++
+      const last = replica.sizeBytes - 1n
+      try {
+        const stream = await providerFor(replica.connectedAccount).readRange(replica.connectedAccount, replica.providerFileId, last, last)
+        await collect(stream, 1)
+        await prisma.fileReplica.updateMany({ where: { id: replica.id, status: 'healthy' }, data: { lastVerifiedAt: now } })
+      } catch (err) {
+        if (err instanceof ProviderUnavailableError && err.notFound) {
+          await prisma.fileReplica.updateMany({ where: { id: replica.id, status: 'healthy' }, data: { status: 'lost' } })
+          result.lost++
+        } else if (err instanceof ProviderUnavailableError) {
+          refused.add(replica.connectedAccountId)
+          await markAccountUnhealthy(replica.connectedAccountId, 'Storage provider refused access.').catch(() => undefined)
+        }
+        // Anything else (network, quota) says nothing about the copy; it is checked again next time.
+      }
+    }
+  }
+  result.refusedAccounts = refused.size
+  return result
+}
+
+/** Hourly: checks the copies that have gone longest without a check, a batch at a time. */
+export function sweepCopyChecks(): Promise<VerifyResult> {
+  return verifyCopies({ olderThanMs: VERIFY_EVERY_MS, limit: VERIFY_BATCH })
+}
+
 /** Retries deletion of every queued blob on a reachable account. Runs after Repair and from the hourly cleanup. */
 export async function sweepOrphans() {
   const orphans = await prisma.orphanBlob.findMany({ where: { connectedAccount: { status: 'connected' } }, include: { connectedAccount: true } })
@@ -195,6 +252,8 @@ export async function sweepOrphans() {
 
 async function runJob(jobId: string) {
   try {
+    // First check every copy, so ones that vanished without anyone reading them get rebuilt too.
+    await verifyCopies({ olderThanMs: 0 }).catch((err) => console.error('[repair] copy check failed', { error: err instanceof Error ? err.name : 'error' }))
     for await (const file of filesMissingCopy()) {
       let result: Awaited<ReturnType<typeof repairOne>>
       try {

@@ -1,6 +1,6 @@
 import { app } from './app.js'
 import { env } from './config/env.js'
-import { resumeRepairOnBoot, sweepOrphans } from './modules/admin/repair.js'
+import { resumeRepairOnBoot, sweepCopyChecks, sweepOrphans } from './modules/admin/repair.js'
 import { scheduleSweeps, sweepStaleUploads } from './modules/uploads/stale-uploads.js'
 import { sweepDavTempFiles } from './modules/webdav/family-ports.js'
 import { assertMasterKeyMatches } from './modules/crypto/file-keys.js'
@@ -23,7 +23,7 @@ async function main() {
   // Node cuts every request after 5 minutes by default, which kills large uploads and long playback.
   server.requestTimeout = 0
   server.headersTimeout = 60_000
-  scheduleSweeps([sweepStaleUploads, sweepDavTempFiles, sweepOrphans])
+  scheduleSweeps([sweepStaleUploads, sweepDavTempFiles, sweepOrphans, sweepCopyChecks])
   void resumeRepairOnBoot().catch((error) => console.error('Repair resume failed:', error instanceof Error ? error.name : 'unknown error'))
 }
 

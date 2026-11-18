@@ -356,6 +356,7 @@ model FileReplica {
   providerFileId     String           @map("provider_file_id") @db.VarChar(191)
   status             String           @default("healthy") @db.VarChar(32)
   sizeBytes          BigInt           @map("size_bytes")
+  lastVerifiedAt     DateTime?        @map("last_verified_at")
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
   file               File             @relation(fields: [fileId], references: [id], onDelete: Cascade)
@@ -363,6 +364,7 @@ model FileReplica {
 
   @@unique([fileId, connectedAccountId])
   @@index([connectedAccountId, status])
+  @@index([status, lastVerifiedAt])
   @@map("file_replicas")
 }
 

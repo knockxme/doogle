@@ -216,7 +216,7 @@ async function createFile(session: LoadedSession, copies: Copy[], total: bigint)
         wrappedFileKey: session.wrappedFileKey,
         encryptedSizeBytes: total,
         contentModifiedAt: new Date(),
-        replicas: { create: copies.map((copy) => ({ connectedAccountId: copy.account.id, providerFileId: copy.state.providerFileId!, sizeBytes: total })) },
+        replicas: { create: copies.map((copy) => ({ connectedAccountId: copy.account.id, providerFileId: copy.state.providerFileId!, sizeBytes: total, lastVerifiedAt: new Date() })) },
       },
     }),
     prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } }),
