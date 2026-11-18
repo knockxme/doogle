@@ -16,6 +16,8 @@ import { getDefaultCapBytes, initialCapForConnect, syncQuotaForAccount } from '.
 
 export const connectedAccountRouter = Router()
 
+const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
+
 const s3ConnectSchema = z.object({
   name: z.string().trim().min(1).max(191),
   bucket: z.string().trim().min(1).max(191),
@@ -83,7 +85,6 @@ async function createGoogleConnectUrl(req: AuthRequest) {
 connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const body = s3ConnectSchema.parse(req.body)
-    const providerConfig = await prisma.providerConfig.findFirstOrThrow({ where: { provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
     const providerAccountId = `${body.bucket}:${body.endpoint || body.region}`
     const existingAccount = await prisma.connectedAccount.findFirst({ where: { provider: 's3', providerAccountId } })
     const defaultCap = await getDefaultCapBytes()
@@ -91,7 +92,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
       ? await prisma.connectedAccount.update({
         where: { id: existingAccount.id },
         data: {
-          providerConfigId: providerConfig.id,
+          providerConfigId: null,
           email: `${body.bucket} (S3)`,
           displayName: body.name,
           accessTokenEncrypted: encryptText('s3'),
@@ -105,7 +106,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
       : await prisma.connectedAccount.create({ data: {
         userId: req.user!.id,
         capBytes: initialCapForConnect(null, defaultCap),
-        providerConfigId: providerConfig.id,
+        providerConfigId: null,
         provider: 's3',
         providerAccountId,
         email: `${body.bucket} (S3)`,
@@ -154,7 +155,9 @@ connectedAccountRouter.post('/s3', requireAuth, requireAdmin, async (req: AuthRe
       })
     } catch (error) {
       if (!existingAccount) await prisma.connectedAccount.delete({ where: { id: account.id } }).catch(() => undefined)
-      throw error
+      // The SDK error name (NoSuchBucket, InvalidAccessKeyId, AccessDenied...) is safe to show and tells the admin what to fix.
+      const reason = error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : 'unknown error'
+      return res.status(400).json({ code: 'S3_CONNECTION_FAILED', message: `Could not use this bucket (${reason}). Check the bucket name, region, endpoint and keys.` })
     }
   } catch (error) {
     return next(error)
@@ -189,6 +192,8 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
     const tokenResult = await client.getToken(query.code)
     const tokens = tokenResult.tokens
     if (!tokens.access_token) return res.status(400).json({ code: 'GOOGLE_OAUTH_FAILED', message: 'Google did not return required tokens.' })
+    // Google lets the user untick the Drive box on the consent screen. Without it no upload can work.
+    if (tokens.scope && !tokens.scope.split(' ').includes(DRIVE_FILE_SCOPE)) return res.redirect(`${env.FRONTEND_URL}/google-connected?status=error&reason=scope`)
     client.setCredentials(tokens)
     const oauth2 = google.oauth2({ version: 'v2', auth: client })
     const profile = await oauth2.userinfo.get()
@@ -222,7 +227,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
     await syncGoogleQuota(account.id)
     return res.redirect(`${env.FRONTEND_URL}/google-connected?status=success`)
   } catch (error) {
-    console.error('Google OAuth callback failed:', error)
+    console.error('Google OAuth callback failed:', error instanceof Error ? error.name : 'unknown error')
     return res.redirect(`${env.FRONTEND_URL}/google-connected?status=error`)
   }
 })

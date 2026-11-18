@@ -25,10 +25,12 @@ async function main() {
     return
   }
 
-  await prisma.providerConfig.updateMany({
-    where: { userId: null, provider: 'google_drive', status: 'active' },
-    data: { status: 'disabled' },
-  })
+  // Runs on every container start. Once a config exists, Admin > Storage owns it; reseeding would undo the admin's edits.
+  const existing = await prisma.providerConfig.count({ where: { userId: null, provider: 'google_drive', status: 'active' } })
+  if (existing > 0) {
+    console.log('Google Drive config already set; .env GOOGLE_* values are not applied. Change it in Admin > Storage.')
+    return
+  }
 
   const config = await prisma.providerConfig.create({
     data: {
@@ -47,7 +49,7 @@ async function main() {
 
 main()
   .catch((error) => {
-    console.error(error)
+    console.error('Google config seed failed:', error instanceof Error ? error.name : 'unknown error')
     process.exit(1)
   })
   .finally(async () => {

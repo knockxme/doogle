@@ -1,4 +1,5 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
+import { z } from 'zod'
 import { requireAuth } from '../../middleware/auth.middleware.js'
 import { requireAdmin } from '../../middleware/admin.middleware.js'
 import { prisma } from '../../config/prisma.js'
@@ -6,6 +7,18 @@ import { decryptText, encryptText } from '../../utils/crypto.js'
 
 export const systemRouter = Router()
 
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+]
+
+/** The callback address as the browser sees it. nginx sends X-Forwarded-Prefix (/api) because it strips that prefix. */
+function defaultRedirectUri(req: Request) {
+  const prefix = req.get('x-forwarded-prefix') ?? ''
+  const safePrefix = /^(\/[A-Za-z0-9._-]+)*$/.test(prefix) ? prefix : ''
+  return `${req.protocol}://${req.get('host')}${safePrefix}/connected-accounts/google/callback`
+}
 
 systemRouter.get('/google-config', requireAuth, requireAdmin, async (req, res, next) => {
   try {
@@ -14,7 +27,7 @@ systemRouter.get('/google-config', requireAuth, requireAdmin, async (req, res, n
       orderBy: { createdAt: 'desc' }
     })
 
-    const defaultRedirect = `${req.protocol}://${req.get('host')}/connected-accounts/google/callback`
+    const defaultRedirect = defaultRedirectUri(req)
 
     if (!config) {
       return res.json({
@@ -42,59 +55,45 @@ systemRouter.get('/google-config', requireAuth, requireAdmin, async (req, res, n
   }
 })
 
+const googleConfigSchema = z.object({
+  clientId: z.string().trim().min(1),
+  clientSecret: z.string().trim().optional(),
+  redirectUri: z.string().trim().url().optional().or(z.literal('')),
+})
+
 systemRouter.post('/google-config', requireAuth, requireAdmin, async (req, res, next) => {
   try {
-    const { clientId, clientSecret, redirectUri } = req.body
+    const body = googleConfigSchema.parse(req.body)
+    const finalRedirectUri = body.redirectUri || defaultRedirectUri(req)
 
-    if (!clientId) {
-      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client ID is required.' })
-    }
-
-    const defaultRedirect = `${req.protocol}://${req.get('host')}/connected-accounts/google/callback`
-    const finalRedirectUri = redirectUri || defaultRedirect
-
-    const scopes = [
-      'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
-    ]
-
-    // Disable old global active config
-    await prisma.providerConfig.updateMany({
-      where: { userId: null, provider: 'google_drive', status: 'active' },
-      data: { status: 'disabled' }
-    })
-
-    // Retrieve the old config to see if we need to reuse the secret if it was not provided in the request
-    let finalSecret = clientSecret
+    // A missing secret reuses the current one. Checked before anything changes, so a refusal leaves the working config active.
+    let finalSecret = body.clientSecret
     if (!finalSecret) {
-      const oldConfig = await prisma.providerConfig.findFirst({
-        where: { userId: null, provider: 'google_drive', status: 'disabled' },
-        orderBy: { createdAt: 'desc' }
-      })
-      if (oldConfig) {
+      const current = await prisma.providerConfig.findFirst({ where: { userId: null, provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+      if (current) {
         try {
-          finalSecret = decryptText(oldConfig.clientSecretEncrypted)
+          finalSecret = decryptText(current.clientSecretEncrypted)
         } catch {
-          // ignore
+          finalSecret = undefined
         }
       }
     }
+    if (!finalSecret) return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client Secret is required for first-time setup.' })
 
-    if (!finalSecret) {
-      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client Secret is required for first-time setup.' })
-    }
-
-    const config = await prisma.providerConfig.create({
-      data: {
-        userId: null,
-        provider: 'google_drive',
-        clientIdEncrypted: encryptText(clientId),
-        clientSecretEncrypted: encryptText(finalSecret),
-        redirectUri: finalRedirectUri,
-        scopes,
-        status: 'active'
-      }
+    // Accounts already connected keep the config they were connected with, so disabling the old one does not cut them off.
+    const config = await prisma.$transaction(async (tx) => {
+      await tx.providerConfig.updateMany({ where: { userId: null, provider: 'google_drive', status: 'active' }, data: { status: 'disabled' } })
+      return tx.providerConfig.create({
+        data: {
+          userId: null,
+          provider: 'google_drive',
+          clientIdEncrypted: encryptText(body.clientId),
+          clientSecretEncrypted: encryptText(finalSecret!),
+          redirectUri: finalRedirectUri,
+          scopes: GOOGLE_SCOPES,
+          status: 'active',
+        },
+      })
     })
 
     return res.status(201).json({
